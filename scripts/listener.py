@@ -72,7 +72,7 @@ HTTP_TOKEN   = "napcat"
 BOT_QQ       = 1000000001           # 机器人自身 QQ (用于判断是否被 @)
 SUPER_ADMIN  = 1000000002           # 超级管理员: 永远可用所有指令, 且只有TA能开关"所有人@"
 ADMIN_QQS    = []                   # 额外管理员QQ列表(可空); 与超管一样不受"所有人开关"限制
-GROUPS_ALLOW = []                   # 允许响应的群(空=所有群); 如只在111111111响应则填 [111111111]
+GROUPS_ALLOW = []                   # 允许响应的群(空=所有群); 如只在1000000003响应则填 [1000000003]
 
 # "所有人@"开关: 默认状态 + 持久化文件(重启后保留上次状态)
 ALLOW_EVERYONE_DEFAULT = True       # 首次运行时的默认值(True=所有人可@)
@@ -82,7 +82,7 @@ CHOUQIAN_FILE = os.path.join(CONF_DIR, "chouqian.json")      # 抽签「每人�
 CHOUQIAN_DELAY = 1.0                # 抽签后延迟多少秒再发送结果
 # 打卡群列表: 与 group_sign.py 共享同一文件, 「添加打卡群」指令写入它, group_sign 零点读取。
 SIGN_GROUPS_FILE = os.path.join(CONF_DIR, "sign_groups.json")
-SEED_SIGN_GROUPS = [111111111, 222222222, 333333333]  # 种子(与 group_sign.py 保持一致)
+SEED_SIGN_GROUPS = [1000000003, 977249121, 959415637]  # 种子(与 group_sign.py 保持一致)
 
 # 普通人(非管理员)可见/可用的指令关键词白名单(可后续扩展)。管理员不受此限制, 可用全部指令。
 #   「当前占卜」= 随机起一卦(原占卜/卜卦/起卦, 现只保留一个入口);
@@ -424,7 +424,7 @@ def _do_sign(group_id):
 
 
 def cmd_test_sign():
-    """每日打卡测试: 只在测试专用群 111111111 打卡(用掉当天名额)。"""
+    """每日打卡测试: 只在测试专用群 1000000003 打卡(用掉当天名额)。"""
     try:
         ok, y = _do_sign(TARGET_SIGN_GROUP)
         extra = f"\n💬 {y}" if y else ""
@@ -505,27 +505,41 @@ def cmd_today_sign(sender_qq, group_id):
 
 
 def cmd_menu():
-    """普通人菜单: 只展示白名单里的公开指令(可后续扩展 PUBLIC_CMDS)。"""
-    lines = ["📋 指令菜单 (@我 + 关键词)"]
+    """指令菜单: 展示「所有人可用」的全部指令。
+    ⚠️ 维护约定: 各服务的普通指令都集中在这里展示 ——
+      listener.py 本身 + daily_image.py(每日一图, 无权限检查) +
+      douyin_spark.py / spark_status.py(仅管理员, 不在本菜单出现)。
+    新增普通权限指令时, 必须同步: ① 加入 COMMANDS(level="all");
+      ② 加入 PUBLIC_CMDS(如需限次控制) 或直接写死在下方; ③ 更新手册指令表。"""
+    lines = ["📋 指令菜单 (@我 + 关键词)", "—— 所有人可用 ——",
+             "• 菜单/帮助 (本菜单, 不限次)"]
     for kw in PUBLIC_CMDS:
         tag = " (不限次)" if kw in PUBLIC_UNLIMITED else ""
         suffix = " +问题" if kw == "起卦" else ""  # 起卦需带问题正文
         lines.append(f"• {kw}{tag}{suffix}")
-    lines.append("(标注「不限次」的可反复使用, 其余每人每天各一次)")
+    # 每日一图来自 daily_image.py 服务, 无权限与次数限制
+    lines.append("• 每日一图 (不限次, 随机美图)")
+    lines.append("(标注「不限次」的可反复使用, 其余每人每天各一次;"
+                 " 管理员请用「手册」查看全部指令)")
     return "\n".join(lines)
 
 
 def cmd_menu_admin():
-    """管理员手册: 列出全部指令名, 不带描述。"""
+    """管理员手册: 列出全部指令名(含其他服务脚本的指令), 不带描述。
+    ⚠️ 维护约定: 新增任何服务的 @指令 后, 必须同步更新这里 + 手册指令表。"""
     names = []
     for keys, _fn, _level, _argmode in COMMANDS:
         names.append(keys[0])  # 每条取第一个关键词作为代表
+    # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py)
+    names += ["添加续火花", "删除续火花", "续火花名单", "立即续火花",
+              "查看火花", "每日一图"]
     seen, uniq = set(), []
     for n in names:
         if n not in seen:
             seen.add(n)
             uniq.append(n)
-    return "📖 管理员手册\n" + "\n".join(f"• {n}" for n in uniq)
+    return ("📖 管理员手册\n（前半为监听指令, 后半为抖音火花/每日一图）\n"
+            + "\n".join(f"• {n}" for n in uniq))
 
 
 def cmd_switch_on():
@@ -788,7 +802,7 @@ def cmd_add_sign_group(text, sender_qq):
     (填的是 QQ 群号, 不是 QQ 号)"""
     m = re.search(r"(\d{5,15})", text)
     if not m:
-        return "❌ 格式: @我 添加每日打卡 群号  (例: 添加每日打卡 333333333)"
+        return "❌ 格式: @我 添加每日打卡 群号  (例: 添加每日打卡 959415637)"
     gid = int(m.group(1))
     groups = load_sign_groups()
     if gid in groups:
@@ -803,7 +817,7 @@ def cmd_del_sign_group(text, sender_qq):
     """管理员删除自动打卡群:「删除每日打卡 群号」/「删除打卡群 群号」(旧别名)。"""
     m = re.search(r"(\d{5,15})", text)
     if not m:
-        return "❌ 格式: @我 删除每日打卡 群号  (例: 删除每日打卡 333333333)"
+        return "❌ 格式: @我 删除每日打卡 群号  (例: 删除每日打卡 959415637)"
     gid = int(m.group(1))
     groups = load_sign_groups()
     if gid not in groups:
@@ -884,7 +898,7 @@ def cmd_group_switch(text, sender_qq):
     兼容: 提取文本里的群号 + 「开启/关闭」关键词。"""
     m = re.search(r"(\d{5,15})", text)
     if not m:
-        return "❌ 格式: @我 群号 状态：开启/关闭  (例: 111111111 状态：关闭)"
+        return "❌ 格式: @我 群号 状态：开启/关闭  (例: 1000000003 状态：关闭)"
     gid = int(m.group(1))
     if "开启" in text or "打开" in text or "开机" in text:
         on = True
@@ -990,7 +1004,7 @@ def _record_at_and_check(group_id, qq):
             f"{COOLDOWN_SEC//60}分钟, 期间不再响应(本提示仅此一次)。")
 
 
-TARGET_SIGN_GROUP = 111111111  # 「每日打卡测试」目标群(测试专用, 与 group_sign 一致)
+TARGET_SIGN_GROUP = 1000000003  # 「每日打卡测试」目标群(测试专用, 与 group_sign 一致)
 
 # 静默哨兵: dispatch 返回它表示"命中指令但权限不足", handle_event 不发任何消息。
 # (区别于返回 None = 完全没匹配到指令, 会回复"未识别")
