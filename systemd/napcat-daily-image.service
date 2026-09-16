@@ -1,0 +1,14 @@
+[Unit]
+Description=每日一图 (scripts/daily_image.py: QQ@返图 + 本机 HTTP API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/daily_image.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=抖音火花状态查询 (scripts/spark_status.py: @查看火花, 仅管理员)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/spark_status.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

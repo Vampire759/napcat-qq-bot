@@ -1,0 +1,21 @@
+# ===== 运行时产物: 日志 =====
+logs/*.log
+logs/*.out
+*.out
+
+# ===== conf/ 运行时配置与登录态(严禁提交, 仓库只保留 *.example.json) =====
+conf/*
+!conf/*.example.json
+
+# ===== 运行时目录 =====
+napcat/
+models/
+wxstore/
+images/*
+!images/.gitkeep
+back/
+*.tar.gz
+
+# ===== python =====
+__pycache__/
+*.pyc

@@ -1,0 +1,14 @@
+[Unit]
+Description=抖音续火花守护 (scripts/douyin_spark.py: 零点自动发消息 + QQ@名单管理)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/douyin_spark.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

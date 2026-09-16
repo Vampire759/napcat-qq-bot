@@ -1,0 +1,14 @@
+[Unit]
+Description=NapCat 群监听机器人 (scripts/listener.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/listener.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
