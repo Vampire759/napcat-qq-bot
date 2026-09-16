@@ -11,6 +11,67 @@
 
 全部脚本为**纯 Python 单文件**（无框架），配置/日志/图片/脚本按目录分类，systemd 用户级服务常驻 + 开机自启。
 
+## 环境要求与前置安装
+
+### 需要什么环境
+
+| 项目 | 要求 | 说明 |
+|------|------|------|
+| 操作系统 | Linux x86_64 / arm64（Debian / Ubuntu / 飞牛OS 等带 systemd 的发行版） | Windows/Mac 不可用（systemd 用户级服务是核心） |
+| Docker | **必须** | 跑 NapCat 容器（QQ 协议端/机器人本体） |
+| Python | ≥ 3.9 + pip3 | 所有脚本纯标准库 + requests/playwright |
+| 内存 | ≥ 2GB 可用 | Chromium 限 128MB 堆 + 各脚本 30~96MB，很低；QQ 登录态常驻 |
+| 网络 | 能访问 QQ 服务器；抖音功能需能访问 douyin.com | 国内服务器可直接用镜像源装 Docker 镜像 |
+| 账号 | 一个小号 QQ + 手机抖音 | 大号有风控风险，建议小号 |
+
+### 第 1 步：安装 Docker（容器运行时）
+
+```bash
+# 方式一（推荐, 官方一键脚本）:
+curl -fsSL https://get.docker.com | sudo sh
+# 方式二（Debian/Ubuntu 源）:
+sudo apt install -y docker.io && sudo systemctl enable --now docker
+
+# 当前用户免 sudo 使用 docker（装完重新登录生效）:
+sudo usermod -aG docker $USER
+```
+
+### 第 2 步：安装 NapCat 容器（机器人本体，唯一必需容器）
+
+```bash
+mkdir -p napcat/config napcat/data
+# 国内服务器优先用镜像源（Docker Hub 直连经常失败）:
+docker run -d --name napcat --restart unless-stopped \
+  -p 3000:3000 -p 3001:3001 -p 6099:6099 \
+  -v $PWD/napcat/config:/app/napcat/config \
+  -v $PWD/napcat/data:/app/napcat/data \
+  docker.m.daocloud.io/mlikiowa/napcat-docker:latest
+# 海外服务器直接: mlikiowa/napcat-docker:latest
+```
+
+| 端口 | 用途 |
+|------|------|
+| 3000 | OneBot HTTP API（脚本发消息走这里） |
+| 3001 | OneBot WebSocket（脚本收群消息走这里） |
+| 6099 | NapCat WebUI（登录 QQ 用） |
+
+然后浏览器打开 `http://服务器IP:6099/webui` 扫码登录机器人 QQ，并在 WebUI 的网络配置里把 **HTTP(3000) 和 WS(3001) 的 token 都设为 `napcat`**（或你自定义的，与脚本配置保持一致）。
+
+> 只需要这一个容器。其余组件（监听/打卡/续火花/每日一图）都是宿主机上的 Python systemd 服务，不需要额外容器。
+
+### 第 3 步：Python 环境
+
+```bash
+sudo apt install -y python3 python3-pip          # 如未安装
+pip3 install --user requests playwright          # 国内慢可加: -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 仅抖音续火花需要 Chromium（其余功能跳过这步）:
+python3 -m playwright install chromium           # 约 150MB
+sudo python3 -m playwright install-deps chromium # 缺系统库(libnss3等)时才需要 sudo
+```
+
+装好后运行 `bash install.sh` 会自动检测以上环境并完成剩余部署（配置 → systemd 服务 → 启动 → 开机自启）。
+
 ## 一键搭建
 
 ```bash

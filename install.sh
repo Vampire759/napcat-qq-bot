@@ -36,11 +36,28 @@ BANNER='
 echo -e "$BANNER"
 
 # ============================================================
-# 第 0 步: 前置检查
+# 第 0 步: 前置检查 (python3 / systemd / docker)
 # ============================================================
 [ "$(id -u)" -eq 0 ] && abort "请不要用 root 运行本脚本! 用普通用户运行 (服务是用户级 systemd)"
 command -v python3 >/dev/null || abort "未检测到 python3, 请先安装: sudo apt install python3 python3-pip"
-command -v systemctl >/dev/null || abort "未检测到 systemd, 本脚本仅支持 systemd 发行版"
+command -v systemctl >/dev/null || abort "未检测到 systemd, 本脚本仅支持 systemd 发行版 (Debian/Ubuntu/飞牛OS等)"
+
+# --- Docker (跑 NapCat 容器本体, 必装) ---
+if ! command -v docker >/dev/null 2>&1; then
+    warn "未检测到 docker (NapCat 机器人本体的容器运行时, 必装)"
+    echo "  一键安装(官方脚本):  curl -fsSL https://get.docker.com | sudo sh"
+    echo "  或(Debian/Ubuntu):   sudo apt install -y docker.io && sudo systemctl enable --now docker"
+    echo "  装完把当前用户加进 docker 组(免 sudo):  sudo usermod -aG docker \$USER  (重新登录生效)"
+    read -r -p "现在就自动安装 docker (需要 sudo 密码)? [y/N]: " DO_DOCKER_INSTALL
+    if [ "${DO_DOCKER_INSTALL:-n}" = "y" ]; then
+        if curl -fsSL https://get.docker.com | sudo sh; then
+            sudo usermod -aG docker "$USER" || true
+            warn "docker 已装好; 若当前会话 docker 命令报权限错误, 请退出重新登录后再跑本脚本"
+        else
+            warn "docker 自动安装失败, 请按上面提示手动安装后重跑本脚本"
+        fi
+    fi
+fi
 info "前置检查通过 | 安装目录: $PROJECT_DIR"
 
 # ============================================================
@@ -49,11 +66,19 @@ info "前置检查通过 | 安装目录: $PROJECT_DIR"
 info "安装 Python 依赖 (requests, playwright)..."
 pip3 install --user -q requests playwright \
   || pip3 install --user --break-system-packages -q requests playwright \
+  || pip3 install --user -q -i https://pypi.tuna.tsinghua.edu.cn/simple requests playwright \
+  || pip3 install --user --break-system-packages -q -i https://pypi.tuna.tsinghua.edu.cn/simple requests playwright \
   || abort "pip3 安装失败, 请手动执行: pip3 install --user requests playwright"
 export PATH="$HOME/.local/bin:$PATH"
 if python3 -c "import playwright" >/dev/null 2>&1; then
     info "安装 Chromium (抖音脚本用, 约 150MB, 首次较慢)..."
     python3 -m playwright install chromium || warn "chromium 安装失败, 抖音功能暂不可用, 其余功能不受影响"
+    # Chromium 运行需要的系统库(libnss3/libatk 等), 缺了会报 Host system is missing dependencies
+    read -r -p "自动安装 Chromium 系统依赖库(需要 sudo, 强烈建议)? [Y/n]: " DO_DEPS
+    if [ "${DO_DEPS:-y}" != "n" ]; then
+        sudo python3 -m playwright install-deps chromium \
+          || warn "系统依赖安装失败; 若 chromium 启动报错, 手动执行: sudo python3 -m playwright install-deps chromium"
+    fi
 else
     warn "playwright 不可用, 跳过 chromium (仅影响抖音功能)"
 fi
@@ -111,29 +136,43 @@ info "服务定义已安装并 daemon-reload"
 
 # ============================================================
 # 第 5 步: NapCat 容器 (可选, 已有可跳过)
+#   镜像优先国内源( DaoCloud ), 拉取失败自动回退 Docker Hub
 # ============================================================
 echo ""
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'napcat'; then
-    info "NapCat 容器已在运行"
+NAPCAT_IMAGE_MIRROR="docker.m.daocloud.io/mlikiowa/napcat-docker:latest"
+NAPCAT_IMAGE_HUB="mlikiowa/napcat-docker:latest"
+
+run_napcat() {
+    docker run -d --name napcat --restart unless-stopped \
+      -p 3000:3000 -p 3001:3001 -p 6099:6099 \
+      -v "$PROJECT_DIR/napcat/config:/app/napcat/config" \
+      -v "$PROJECT_DIR/napcat/data:/app/napcat/data" \
+      "$1"
+}
+
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'napcat'; then
+    if docker ps --format '{{.Names}}' | grep -qx 'napcat'; then
+        info "NapCat 容器已在运行"
+    else
+        warn "napcat 容器存在但未运行, 尝试启动: docker start napcat"
+        docker start napcat || warn "启动失败, 手动执行: docker start napcat"
+    fi
+elif ! command -v docker >/dev/null 2>&1; then
+    warn "docker 仍未安装, 跳过 NapCat 容器; 装好 docker 后手动执行第 5 步提示的命令"
 else
-    warn "未检测到 napcat 容器。如需安装 NapCat(机器人本体), 复制下面整段执行:"
-    echo -e "${Y}
-docker run -d --name napcat --restart unless-stopped \\
-  -p 3000:3000 -p 3001:3001 -p 6099:6099 \\
-  -v $PROJECT_DIR/napcat/config:/app/napcat/config \\
-  -v $PROJECT_DIR/napcat/data:/app/napcat/data \\
-  mlikiowa/napcat-docker:latest
-${N}"
+    warn "未检测到 napcat 容器(机器人本体)。将执行:"
+    echo "  docker run -d --name napcat --restart unless-stopped \\"
+    echo "    -p 3000:3000 -p 3001:3001 -p 6099:6099 \\"
+    echo "    -v $PROJECT_DIR/napcat/config:/app/napcat/config \\"
+    echo "    -v $PROJECT_DIR/napcat/data:/app/napcat/data \\"
+    echo "    $NAPCAT_IMAGE_MIRROR   (失败自动换 Docker Hub 源)"
     echo "装好后打开 http://服务器IP:6099/webui 扫码登录机器人 QQ, 并把 WebUI 里"
     echo "OneBot 的 HTTP(3000)/WS(3001) token 设为上面填的 token。"
     read -r -p "现在就执行上面命令安装 NapCat? [y/N]: " DO_DOCKER
     if [ "${DO_DOCKER:-n}" = "y" ]; then
-        docker run -d --name napcat --restart unless-stopped \
-          -p 3000:3000 -p 3001:3001 -p 6099:6099 \
-          -v "$PROJECT_DIR/napcat/config:/app/napcat/config" \
-          -v "$PROJECT_DIR/napcat/data:/app/napcat/data" \
-          mlikiowa/napcat-docker:latest \
-          || warn "docker 启动失败(可能没装 docker 或无权限), 可稍后手动执行"
+        run_napcat "$NAPCAT_IMAGE_MIRROR" \
+          || run_napcat "$NAPCAT_IMAGE_HUB" \
+          || warn "容器启动失败(网络/权限), 可稍后手动执行上面命令"
     fi
 fi
 
