@@ -29,6 +29,7 @@ QQ 指令(@机器人 + 文字, 关键词都在下面配置区, 可自行修改):
   python3 douyin_spark.py --check      只检查登录态
   python3 douyin_spark.py --match 抖音号  立刻匹配一个号并写入资料
   python3 douyin_spark.py --fire       立刻跑一轮发送
+  python3 douyin_spark.py --days       只刷新火花天数(扫一次会话列表, 不发消息)
   python3 douyin_spark.py --selftest   打开消息页导出调试信息(抖音改版时排查选择器)
 
 依赖: playwright + chromium(见 douyin_qrlogin.py 头部安装说明)
@@ -90,6 +91,7 @@ KW_DEL  = ["删除续火花", "移除续火花", "取消续火花"]
 KW_LIST = ["续火花名单", "续火花列表", "火花名单"]
 KW_NOW  = ["立即续火花", "马上续火花", "手动续火花"]
 KW_HELP = ["续火花帮助", "火花帮助"]
+KW_REFRESH = ["刷新火花", "火花天数刷新"]   # 一键刷新全部火花天数(扫会话列表)
 
 # ---- 续火花行为 ----
 FIRE_HH, FIRE_MM, FIRE_SS = 0, 0, 1      # 每天发送时刻: 00:00:01
@@ -710,10 +712,12 @@ class DouyinSession:
                 pass
 
     def read_spark_days(self, nick=None):
-        """尽力读取火花/连续聊天天数, 读不到返回 None。
-        实测: 天数显示在会话列表项的火花图标旁(.commonStreaknormalText, 纯数字无"天"字),
-        所以按昵称定位会话项读数最可靠; 页面"N天"类文案作为兜底。"""
-        # 方式1: 会话列表项按昵称定位, 读火花数字
+        """按昵称读取单个好友的火花天数, 读不到返回 None。
+        简化说明(2026-09-17): 旧版只认 .commonStreaknormalText(蓝色小火苗样式),
+        火焰其他样式(大火苗/hot 变体)类名不同, 导致 9 人只读到 1 人。
+        现改为: ① 通用选择器 [class*='treak'](命中任意 Streak 样式)
+               ② 兜底「会话项内任意纯数字行」(火花图标旁的数字)。
+        """
         if nick:
             try:
                 wraps = self.page.locator(
@@ -730,18 +734,13 @@ class DouyinSession:
                             timeout=800).strip()
                     except Exception:
                         continue
-                    if title_txt and (title_txt == nick or title_txt.startswith(nick)):
-                        try:
-                            txt = item.locator(".commonStreaknormalText").first.inner_text(
-                                timeout=800).strip()
-                            m = re.search(r"\d{1,5}", txt)
-                            if m:
-                                return int(m.group())
-                        except Exception:
-                            pass
+                    if title_txt and _nick_match(title_txt, nick):
+                        days = self._days_from_item(item)
+                        if days:
+                            return days
             except Exception:
                 pass
-        # 方式2: 页面文本里的 "火花N天 / 连续聊天N天" 类文案
+        # 兜底: 页面文本里的 "火花N天 / 连续聊天N天" 类文案
         try:
             text = self.page.inner_text("body", timeout=2000)
         except Exception:
@@ -750,6 +749,57 @@ class DouyinSession:
             m = re.search(pat, text)
             if m:
                 return int(m.group(1))
+        return None
+
+    def read_all_spark_days(self):
+        """一次性扫描会话列表, 返回 {会话昵称: 火花天数}。
+        只读列表不点开任何人 —— 一次页面加载即可刷新全部好友, 无需逐个查询。"""
+        out = {}
+        try:
+            wraps = self.page.locator(
+                "[data-e2e='conversation-item'], "
+                ".conversationConversationItemwrapper")
+            n = wraps.count()
+            for i in range(min(n, 80)):
+                item = wraps.nth(i)
+                if not item.is_visible():
+                    continue
+                try:
+                    title = item.locator(
+                        ".conversationConversationItemtitle").first.inner_text(
+                        timeout=800).strip()
+                except Exception:
+                    continue
+                if not title:
+                    continue
+                days = self._days_from_item(item)
+                if days:
+                    out[title] = days
+        except Exception as e:
+            log.info(f"批量扫描火花天数失败: {e}")
+        return out
+
+    @staticmethod
+    def _days_from_item(item):
+        """从单个会话项抠出火花天数: ① class 含 treak 的元素(任意火焰样式)
+        ② 兜底「纯数字行」。都没有返回 None。"""
+        try:
+            loc = item.locator("[class*='treak']")
+            for k in range(min(loc.count(), 4)):
+                txt = loc.nth(k).inner_text(timeout=500).strip()
+                m = re.search(r"\d{1,5}", txt)
+                if m:
+                    return int(m.group())
+        except Exception:
+            pass
+        try:
+            txt = item.inner_text(timeout=800)
+            for line in txt.splitlines():
+                line = line.strip()
+                if re.fullmatch(r"\d{1,5}", line):
+                    return int(line)
+        except Exception:
+            pass
         return None
 
     def selftest(self):
@@ -928,6 +978,60 @@ def job_match_all():
     return f"🔎 重新匹配完成 {ok_n}/{len(results)}\n" + "\n".join(results)
 
 
+def _nick_match(title, nick):
+    """昵称宽松匹配: 会话列表 title 与资料昵称互为包含即算命中
+    (表情/后缀差异, 如「👁️‍🗨️小选」vs「小选」)。"""
+    if not title or not nick:
+        return False
+    return (title == nick or title.startswith(nick) or nick.startswith(title)
+            or nick in title or title in nick)
+
+
+def _scan_and_update_days(sess):
+    """核心刷新: 在已打开的消息页上扫一遍会话列表, 更新 spark_friends.json。
+    供 --days 命令与每轮发送前调用(页面由调用方准备)。返回汇总文本。"""
+    day_map = sess.read_all_spark_days()
+    if not day_map:
+        return "未读到任何火花天数(会话列表为空或抖音改版), 请跑 --selftest 排查"
+    data = load_friends()
+    updated, misses = [], []
+    for dy_id, fr in data.get("friends", {}).items():
+        nick = fr.get("nickname")
+        if not nick or not fr.get("matched"):
+            continue
+        days = None
+        for title, d in day_map.items():
+            if _nick_match(title, nick):
+                days = d
+                break
+        if days:
+            fr["spark_days"] = days
+            updated.append(f"{nick} {days}天")
+        else:
+            misses.append(nick)
+    save_friends(data)
+    log.info(f"火花天数刷新: {len(updated)} 个更新, {len(misses)} 个未读到")
+    lines = [f"🔥 火花天数刷新完成 {len(updated)}/{len(updated) + len(misses)}"]
+    lines += [f"• {u}" for u in updated]
+    if misses:
+        lines.append("未读到(会话列表里没有火花标记): " + "、".join(misses))
+    return "\n".join(lines)
+
+
+def refresh_all_days(sess=None):
+    """一键刷新所有已匹配好友的火花天数: 只打开一次消息页, 扫一遍会话列表,
+    按「标题↔昵称」匹配后写入 spark_friends.json。返回汇总文本。
+    简化点: 全程不点开任何聊天窗, 9 人也只需一次页面加载。
+    注意: DouyinSession 必须经 with 启动(构造函数不开浏览器)。"""
+    if sess is not None:                      # 调用方已开好页面
+        return _scan_and_update_days(sess)
+    with DouyinSession() as s:
+        s.require_login()
+        s.open_chat()
+        s.page.wait_for_timeout(2500)         # 等会话列表渲染完
+        return _scan_and_update_days(s)
+
+
 def job_run_daily(fire_epoch=None, report_groups=()):
     """跑一轮续火花。fire_epoch 给定时, 会先开浏览器待命, 到点(00:00:01)再发。"""
     targets = load_list()
@@ -941,6 +1045,11 @@ def job_run_daily(fire_epoch=None, report_groups=()):
         my_id, my_nick = s.get_self_info()
         log.info(f"登录账号: 抖音号={my_id} 昵称={my_nick}")
         s.open_chat()
+        # 开页后先一次性刷新全部火花天数(只扫会话列表, 不点开聊天窗, 不耗时)
+        try:
+            log.info(_scan_and_update_days(s).splitlines()[0])
+        except Exception as e:
+            log.info(f"火花天数批量刷新失败(不影响发送): {e}")
         if fire_epoch:
             # 已提前开好页面, 精确等到点(最后 50ms 忙等)
             while True:
@@ -1112,26 +1221,46 @@ def extract_message(msg_field):
     return "".join(parts).strip(), at_self
 
 
+def _short_time(s):
+    """'2026-09-16 18:09:56' -> '18:09'(今天) / '09-15 22:10'(非今天), 空→''。"""
+    if not s or s == "从未":
+        return ""
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.date() == datetime.now().date():
+            return dt.strftime("%H:%M")
+        return dt.strftime("%m-%d %H:%M")
+    except Exception:
+        return str(s)[:10]
+
+
 def format_list():
+    """续火花名单: 每人一行的精简视图(与 spark_status 的查看火花保持同风格)。"""
     targets = load_list()
     if not targets:
         return "📋 续火花名单为空\n用法: @我 添加续火花 抖音号"
-    fr = load_friends().get("friends", {})
-    lines = [f"📋 续火花名单(共 {len(targets)} 个)"]
-    for i, t in enumerate(targets, 1):
-        dy = t["douyin_id"]
-        info = fr.get(dy, {})
+    store = load_friends()
+    fr = store.get("friends", {})
+    matched = sum(1 for t in targets if fr.get(t["douyin_id"], {}).get("matched"))
+    lines = [f"📋 续火花 {matched}/{len(targets)}"]
+    for t in targets:
+        info = fr.get(t["douyin_id"], {})
+        nick = (info.get("nickname") or t.get("nickname")
+                or t["douyin_id"] or "?")
         if info.get("matched"):
-            nick = info.get("nickname") or "?"
+            seg = f"🟢 {nick}"
             days = info.get("spark_days")
-            last = info.get("last_send", "未发送")
-            tag = f"✅已匹配 {nick}" + (f" 火花{days}天" if days else "") + f" 上次:{last}"
+            if days is not None:
+                seg += f" {days}天"
+            last = _short_time(info.get("last_send"))
+            if last:
+                seg += f" {last}{'✅' if info.get('last_status') == 'ok' else '⚠️'}"
+            lines.append(seg)
         else:
-            tag = "❌未匹配" + (f"({info.get('last_error')})" if info.get("last_error") else "")
-        lines.append(f"{i}. {dy or ('昵称:' + (t.get('nickname') or '?'))}  {tag}")
-    my = load_friends()
-    if my.get("my_douyin_id"):
-        lines.append(f"登录账号: {my['my_douyin_id']} ({my.get('my_nickname') or ''})")
+            err = info.get("last_error") or "未匹配"
+            lines.append(f"🔴 {nick} {err}")
+    if store.get("my_douyin_id"):
+        lines.append(f"登录: {store.get('my_nickname') or store['my_douyin_id']}")
     lines.append(f"每日 {FIRE_HH:02d}:{FIRE_MM:02d}:{FIRE_SS:02d} 自动发送")
     return "\n".join(lines)
 
@@ -1146,7 +1275,11 @@ def handle_command(text, qq, group_id):
                 "删除续火花 抖音号 —— 移出名单\n"
                 "续火花名单 —— 查看匹配/发送状态\n"
                 "立即续火花 —— 立刻跑一轮\n"
+                "刷新火花 —— 只刷新火花天数(不发消息)\n"
                 "每日 00:00:01 自动发送")
+    if any(k in text for k in KW_REFRESH):
+        _JOB_QUEUE.enqueue({"kind": "days", "qq": qq, "group": group_id})
+        return "🔄 已开始刷新火花天数(只扫列表不发消息), 完成后汇报"
     if any(k in text for k in KW_NOW):
         _JOB_QUEUE.enqueue({"kind": "fire", "qq": qq, "group": group_id})
         return "🚀 已开始执行一轮续火花, 完成后在本群汇报"
@@ -1229,6 +1362,8 @@ def worker_loop():
                     groups = [job["group"]] + [g for g in REPORT_GROUPS
                                                if g != job["group"]]
                     msg = job_run_daily(report_groups=groups)
+                elif job["kind"] == "days":
+                    msg = refresh_all_days()
                 else:
                     continue
             send_group(job["group"], f"[CQ:at,qq={job['qq']}] {msg}")
@@ -1316,6 +1451,8 @@ def main():
     parser.add_argument("--matchall", action="store_true",
                         help="重新匹配名单里所有抖音号(不发消息)")
     parser.add_argument("--fire", action="store_true", help="立刻跑一轮发送")
+    parser.add_argument("--days", action="store_true",
+                        help="只刷新所有好友的火花天数(扫一次会话列表, 不发消息)")
     parser.add_argument("--selftest", action="store_true", help="导出消息页调试信息")
     args = parser.parse_args()
 
@@ -1341,6 +1478,10 @@ def main():
 
     if args.fire:
         log.info(job_run_daily())
+        return
+
+    if args.days:
+        log.info(refresh_all_days())
         return
 
     if args.selftest:

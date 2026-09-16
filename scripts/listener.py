@@ -532,7 +532,7 @@ def cmd_menu_admin():
         names.append(keys[0])  # 每条取第一个关键词作为代表
     # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py)
     names += ["添加续火花", "删除续火花", "续火花名单", "立即续火花",
-              "查看火花", "每日一图"]
+              "刷新火花", "查看火花", "每日一图"]
     seen, uniq = set(), []
     for n in names:
         if n not in seen:

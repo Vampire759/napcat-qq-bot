@@ -103,57 +103,67 @@ def is_privileged(qq):
     return int(qq) == int(SUPER_ADMIN) or int(qq) in load_admins()
 
 
+def _short_time(s):
+    """'2026-09-16 18:09:56' -> '18:09'(今天) / '09-15 22:10'(非今天)。
+    空/从未 返回空串。解析失败原样返回前10位。"""
+    if not s or s == "从未":
+        return ""
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.date() == datetime.now().date():
+            return dt.strftime("%H:%M")
+        return dt.strftime("%m-%d %H:%M")
+    except Exception:
+        return str(s)[:10]
+
+
 def build_status():
-    """汇总名单 + 匹配资料, 返回一段回复文本。"""
+    """汇总名单 + 匹配资料, 返回精简回复: 每个好友一行, 一屏能看全。"""
     targets = _load_json(LIST_FILE, {}).get("targets", [])
     store = _load_json(FRIENDS_FILE, {})
     friends = store.get("friends", {})
 
-    lines = ["🔥 抖音续火花状态"]
-    my_id = store.get("my_douyin_id")
-    if my_id:
-        lines.append(f"登录账号: {my_id} ({store.get('my_nickname') or '未知'})")
+    total = len(targets)
+    matched = sum(1 for t in targets
+                  if friends.get(str(t.get("douyin_id")), {}).get("matched"))
+    # 头部: 匹配数 + 登录账号(没拿到就只看登录态文件)
+    who = store.get("my_nickname") or store.get("my_douyin_id")
+    if who:
+        head = f"🔥 续火花 {matched}/{total} · 登录:{who}"
+    elif os.path.exists(STATE_FILE):
+        head = f"🔥 续火花 {matched}/{total} · 登录:✅"
     else:
-        lines.append("登录账号: 尚未获取(主脚本跑过一轮后自动写入)")
-    if os.path.exists(STATE_FILE):
-        lines.append("登录态文件: ✅ 存在")
-    else:
-        lines.append("登录态文件: ❌ 不存在(需先运行 douyin_qrlogin.py)")
-
-    matched = [t for t in targets
-               if friends.get(str(t.get("douyin_id")), {}).get("matched")]
-    lines.append(f"名单: {len(targets)} 个 | 已匹配: {len(matched)} 个")
+        head = f"🔥 续火花 {matched}/{total} · ⚠️未登录(先跑 douyin_qrlogin)"
+    lines = [head]
 
     if not targets:
-        lines.append("名单为空。管理员可发送: @我 添加续火花 抖音号")
-    else:
-        lines.append("—" * 14)
-        for i, t in enumerate(targets, 1):
-            dy = str(t.get("douyin_id"))
-            info = friends.get(dy, {})
-            if info.get("matched"):
-                nick = info.get("nickname") or "?"
-                days = info.get("spark_days")
-                last = info.get("last_send") or "从未"
-                st = info.get("last_status") or "?"
-                day_txt = f"火花{days}天" if days is not None else "火花天数未知"
-                ok = "✅" if st == "ok" else "⚠️"
-                lines.append(f"{i}. {dy} | {nick} | ✅已匹配 | {day_txt}")
-                lines.append(f"    上次续: {last} {ok} {st if st != 'ok' else ''}".rstrip())
-            else:
-                err = info.get("last_error") or "尚未匹配"
-                lines.append(f"{i}. {dy} | ❌未匹配({err})")
+        lines.append("名单为空, @我 添加续火花 抖音号")
+    for t in targets:
+        dy = str(t.get("douyin_id"))
+        info = friends.get(dy, {})
+        nick = info.get("nickname") or t.get("nickname") or dy
+        if info.get("matched"):
+            # 已匹配: 🟢 昵称 天数 上次续火时间+结果, 一行完事
+            seg = f"🟢 {nick}"
+            days = info.get("spark_days")
+            if days is not None:
+                seg += f" {days}天"
+            last = _short_time(info.get("last_send"))
+            if last:
+                seg += f" {last}{'✅' if info.get('last_status') == 'ok' else '⚠️'}"
+            lines.append(seg)
+        else:
+            # 未匹配: 🔴 昵称 简短原因
+            err = info.get("last_error") or "未匹配"
+            lines.append(f"🔴 {nick} {err}")
 
-    # 下一轮时间: 今天 00:00:01 已过则展示明天
+    # 下轮时间: 今天 00:00:01 已过则展示明天(逻辑与旧版一致)
     now = datetime.now()
     candidate = now.replace(hour=0, minute=0, second=1, microsecond=0)
     if candidate <= now:
         candidate = datetime.fromtimestamp(time.mktime(
             time.localtime(time.time() + 86400)[:3] + (0, 0, 1, 0, 0, -1)))
-    lines.append(f"下轮自动发送: {candidate.strftime('%Y-%m-%d')} {FIRE_LABEL}")
-    updated = store.get("updated")
-    if updated:
-        lines.append(f"资料更新时间: {updated}")
+    lines.append(f"下轮 {candidate.strftime('%m-%d')} {FIRE_LABEL}")
     return "\n".join(lines)
 
 
