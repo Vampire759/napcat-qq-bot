@@ -1,0 +1,14 @@
+[Unit]
+Description=Screen 会话监控 (scripts/pycreen_present.py: @查看服务/查看服务列表/查看运行服务详细状态, 仅管理员)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/vampire2020/NapCatQQ-dokcer
+ExecStart=/usr/bin/python3 /home/vampire2020/NapCatQQ-dokcer/scripts/pycreen_present.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

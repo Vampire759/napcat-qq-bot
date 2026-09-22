@@ -530,15 +530,16 @@ def cmd_menu_admin():
     names = []
     for keys, _fn, _level, _argmode in COMMANDS:
         names.append(keys[0])  # 每条取第一个关键词作为代表
-    # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py)
+    # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py / pycreen_present.py)
     names += ["添加续火花", "删除续火花", "续火花名单", "立即续火花",
-              "刷新火花", "查看火花", "每日一图"]
+              "刷新火花", "查看火花", "每日一图",
+              "查看服务", "查看服务列表", "查看运行服务详细状态"]
     seen, uniq = set(), []
     for n in names:
         if n not in seen:
             seen.add(n)
             uniq.append(n)
-    return ("📖 管理员手册\n（前半为监听指令, 后半为抖音火花/每日一图）\n"
+    return ("📖 管理员手册\n（监听指令 + 抖音火花 + 每日一图 + Screen监控）\n"
             + "\n".join(f"• {n}" for n in uniq))
 
 
