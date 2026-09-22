@@ -5,15 +5,12 @@
 pycreen_present.py — screen 会话监控服务
 
 功能:
-  1. 查看服务: 返回所有 screen 会话状态 + 编号
-  2. 查看服务列表: 返回会话编号 + 名称
-  3. 查看运行服务详细状态 +编号: 返回指定会话的子进程详细信息
+  1. 查看服务列表: 返回会话编号 + 名称
+  2. 服务 +编号: 返回指定会话的子进程详细信息(不带编号则不查看)
 
-@指令(关键词可在配置区修改):
-  @机器人 查看服务              返回所有 screen 会话状态
+@指令(普通权限也可用, 关键词可在配置区修改):
   @机器人 查看服务列表          返回会话编号 + 名称
-  @机器人 查看运行服务详细状态 编号   返回指定会话详细进程信息
-  @机器人 帮助                  查看用法
+  @机器人 服务 编号             返回指定会话详细进程信息
 
 用法:
   python3 pycreen_present.py               常驻(WS 监听)
@@ -88,12 +85,12 @@ LOG_FILE    = os.path.join(LOG_DIR, "pycreen_present.log")
 ADMIN_FILE  = os.path.join(CONF_DIR, "admins.json")
 STATE_FILE  = os.path.join(CONF_DIR, "pycreen_present.json")
 
-KW_VIEW_SERVICE = ["查看服务"]
-KW_VIEW_LIST    = ["查看服务列表"]
-# ⚠️ 不能含"状态"二字 —— listener.py 的 "状态" 指令会子串匹配, 导致两条回复混在一起
-KW_VIEW_DETAIL  = ["查看服务详情", "查看运行服务详情"]
-# ⚠️ "帮助"也与 listener.py 冲突, 改用专属关键词
-KW_HELP         = ["screen帮助", "服务帮助", "监控帮助"]
+# 仅保留两条指令(普通权限也可用):
+#   查看服务列表  → 返回会话编号 + 名称
+#   服务 编号     → 返回指定会话的子进程详情(不带编号则不查看)
+# ⚠️ "查看服务列表"包含"服务", handle_command 里必须先判断列表再判断详情
+KW_VIEW_LIST   = ["查看服务列表"]
+KW_VIEW_DETAIL = ["服务"]
 
 REPLY_DELAY    = 1.0
 MAX_MSG_LEN    = 3500
@@ -328,10 +325,9 @@ def check_rate_limit(cmd_name):
 
 HELP_TEXT = (
     "🔧 screen 服务监控用法\n"
-    "查看服务                返回所有 screen 会话状态 + 编号\n"
     "查看服务列表            返回会话编号 + 名称\n"
-    "查看服务详情 编号       返回指定会话的子进程详细信息\n"
-    "screen帮助              显示本说明"
+    "服务 编号               返回指定会话的子进程详细信息\n"
+    "(不带编号则不查看)"
 )
 
 
@@ -405,19 +401,6 @@ def describe_process(proc):
         return {"error": str(e), "pid": proc.pid}
 
 
-def cmd_view_service():
-    """查看服务: 返回所有 screen 会话状态 + 编号。"""
-    mapping_id, names, times, statuses = sub_screen_ls()
-    if not mapping_id:
-        return "📋 当前没有 screen 会话"
-    lines = [f"📋 共 {len(mapping_id)} 个 screen 会话"]
-    for idx, pid in mapping_id.items():
-        name = names[idx - 1] if idx - 1 < len(names) else "?"
-        status = statuses[idx - 1] if idx - 1 < len(statuses) else "?"
-        lines.append(f"  [{idx}] PID:{pid} 名称:{name} 状态:{status}")
-    return "\n".join(lines)
-
-
 def cmd_view_service_list():
     """查看服务列表: 返回会话编号 + 名称。"""
     mapping_id, names, _, _ = sub_screen_ls()
@@ -431,10 +414,10 @@ def cmd_view_service_list():
 
 
 def cmd_view_detail(text):
-    """查看服务详情+编号: 返回指定会话的子进程详细信息。"""
+    """服务+编号: 返回指定会话的子进程详细信息。"""
     m = re.search(r"(\d+)", text)
     if not m:
-        return "❌ 请提供会话编号, 例如: 查看服务详情 1"
+        return None   # 没有编号 → 不查看(静默)
     idx = int(m.group(1))
 
     mapping_id, names, _, _ = sub_screen_ls()
@@ -468,33 +451,31 @@ def cmd_view_detail(text):
 
 
 def handle_command(text):
-    """指令路由: 返回回复文本, 或 None=不是本脚本的指令。"""
-    if any(k in text for k in KW_HELP):
-        return HELP_TEXT
-
-    if any(k in text for k in KW_VIEW_DETAIL):
-        ok, wait = check_rate_limit("view_detail")
-        if not ok:
-            return f"⏳ 查询太频繁, 请 {wait} 秒后再试"
-        return cmd_view_detail(text)
-
+    """指令路由: 返回回复文本, 或 None=不是本脚本的指令。
+    ⚠️ 必须先判断 KW_VIEW_LIST —— "查看服务列表"包含"服务",
+    若先判断 KW_VIEW_DETAIL 会被误吞。"""
+    # 1. 查看服务列表(普通权限)
     if any(k in text for k in KW_VIEW_LIST):
         ok, wait = check_rate_limit("view_list")
         if not ok:
             return f"⏳ 查询太频繁, 请 {wait} 秒后再试"
         return cmd_view_service_list()
 
-    if any(k in text for k in KW_VIEW_SERVICE):
-        ok, wait = check_rate_limit("view_service")
+    # 2. 服务 +编号(普通权限, 不带编号→None 静默不查看)
+    if any(k in text for k in KW_VIEW_DETAIL):
+        # 先检查有没有编号, 没编号直接静默(不消耗限流额度)
+        if not re.search(r"\d+", text):
+            return None
+        ok, wait = check_rate_limit("view_detail")
         if not ok:
             return f"⏳ 查询太频繁, 请 {wait} 秒后再试"
-        return cmd_view_service()
+        return cmd_view_detail(text)
 
     return None
 
 
 def on_event(ev):
-    """WS 事件处理。"""
+    """WS 事件处理。普通权限也可用, 不检查 is_privileged。"""
     if ev.get("post_type") != "message" or ev.get("message_type") != "group":
         return
     group_id = ev.get("group_id")
@@ -504,12 +485,10 @@ def on_event(ev):
     text, at_self = extract_message(ev.get("message"))
     if not at_self:
         return
-    all_kw = KW_VIEW_SERVICE + KW_VIEW_LIST + KW_VIEW_DETAIL + KW_HELP
+    all_kw = KW_VIEW_LIST + KW_VIEW_DETAIL
     if not any(k in text for k in all_kw):
         return
-    if not is_privileged(qq):
-        log.info(f"群{group_id} 普通成员 {qq} 尝试使用, 已忽略")
-        return
+    # 普通权限也可用, 不再做 is_privileged 检查
     try:
         reply = handle_command(text)
     except Exception as e:
@@ -562,15 +541,17 @@ def main():
 
     if args.test:
         print("=== 业务逻辑测试 ===")
-        print("cmd_view_service:", cmd_view_service())
         print("cmd_view_service_list:", cmd_view_service_list())
-        print("cmd_view_detail:", cmd_view_detail("查看服务详情 1"))
-        print("handle_command(screen帮助):", handle_command("screen帮助"))
+        print("cmd_view_detail(服务 1):", cmd_view_detail("服务 1"))
+        print("cmd_view_detail(服务 无编号):", cmd_view_detail("服务"))
+        print("handle_command(查看服务列表):", handle_command("查看服务列表"))
+        print("handle_command(服务 1):", handle_command("服务 1"))
+        print("handle_command(服务):", handle_command("服务"))
         print("handle_command(未知):", handle_command("乱写的"))
         return
 
     if args.list:
-        print(cmd_view_service())
+        print(cmd_view_service_list())
         return
 
     if args.check:

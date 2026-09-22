@@ -519,6 +519,9 @@ def cmd_menu():
         lines.append(f"• {kw}{tag}{suffix}")
     # 每日一图来自 daily_image.py 服务, 无权限与次数限制
     lines.append("• 每日一图 (不限次, 随机美图)")
+    # screen 监控来自 pycreen_present.py, 普通权限也可用
+    lines.append("• 查看服务列表 (不限次, screen 会话)")
+    lines.append("• 服务 编号 (不限次, 指定会话详情)")
     lines.append("(标注「不限次」的可反复使用, 其余每人每天各一次;"
                  " 管理员请用「手册」查看全部指令)")
     return "\n".join(lines)
@@ -532,8 +535,7 @@ def cmd_menu_admin():
         names.append(keys[0])  # 每条取第一个关键词作为代表
     # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py / pycreen_present.py)
     names += ["添加续火花", "删除续火花", "续火花名单", "立即续火花",
-              "刷新火花", "查看火花", "每日一图",
-              "查看服务", "查看服务列表", "查看服务详情", "查看运行服务详情"]
+              "刷新火花", "查看火花", "每日一图"]
     seen, uniq = set(), []
     for n in names:
         if n not in seen:
