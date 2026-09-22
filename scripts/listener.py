@@ -533,7 +533,7 @@ def cmd_menu_admin():
     # 跨服务指令(douyin_spark.py / spark_status.py / daily_image.py / pycreen_present.py)
     names += ["添加续火花", "删除续火花", "续火花名单", "立即续火花",
               "刷新火花", "查看火花", "每日一图",
-              "查看服务", "查看服务列表", "查看运行服务详细状态"]
+              "查看服务", "查看服务列表", "查看服务详情", "查看运行服务详情"]
     seen, uniq = set(), []
     for n in names:
         if n not in seen:

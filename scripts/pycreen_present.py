@@ -90,8 +90,9 @@ STATE_FILE  = os.path.join(CONF_DIR, "pycreen_present.json")
 
 KW_VIEW_SERVICE = ["查看服务"]
 KW_VIEW_LIST    = ["查看服务列表"]
-KW_VIEW_DETAIL  = ["查看运行服务详细状态"]
-# ⚠️ "帮助"与 listener.py 冲突(两个服务都会响应), 改用专属关键词
+# ⚠️ 不能含"状态"二字 —— listener.py 的 "状态" 指令会子串匹配, 导致两条回复混在一起
+KW_VIEW_DETAIL  = ["查看服务详情", "查看运行服务详情"]
+# ⚠️ "帮助"也与 listener.py 冲突, 改用专属关键词
 KW_HELP         = ["screen帮助", "服务帮助", "监控帮助"]
 
 REPLY_DELAY    = 1.0
@@ -329,7 +330,7 @@ HELP_TEXT = (
     "🔧 screen 服务监控用法\n"
     "查看服务                返回所有 screen 会话状态 + 编号\n"
     "查看服务列表            返回会话编号 + 名称\n"
-    "查看运行服务详细状态 编号   返回指定会话的子进程详细信息\n"
+    "查看服务详情 编号       返回指定会话的子进程详细信息\n"
     "screen帮助              显示本说明"
 )
 
@@ -430,10 +431,10 @@ def cmd_view_service_list():
 
 
 def cmd_view_detail(text):
-    """查看运行服务详细状态 +编号: 返回指定会话的子进程详细信息。"""
+    """查看服务详情+编号: 返回指定会话的子进程详细信息。"""
     m = re.search(r"(\d+)", text)
     if not m:
-        return "❌ 请提供会话编号, 例如: 查看运行服务详细状态 1"
+        return "❌ 请提供会话编号, 例如: 查看服务详情 1"
     idx = int(m.group(1))
 
     mapping_id, names, _, _ = sub_screen_ls()
@@ -563,7 +564,7 @@ def main():
         print("=== 业务逻辑测试 ===")
         print("cmd_view_service:", cmd_view_service())
         print("cmd_view_service_list:", cmd_view_service_list())
-        print("cmd_view_detail:", cmd_view_detail("查看运行服务详细状态 1"))
+        print("cmd_view_detail:", cmd_view_detail("查看服务详情 1"))
         print("handle_command(screen帮助):", handle_command("screen帮助"))
         print("handle_command(未知):", handle_command("乱写的"))
         return
