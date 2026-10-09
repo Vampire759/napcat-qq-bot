@@ -388,13 +388,15 @@ def sub_screen_ls():
 
 
 def get_child_processes(screen_pid):
-    """返回该 screen 会话下所有子进程的 psutil.Process 对象列表。"""
+    """返回该 screen 会话「直接启动」的子进程(不递归孙级)。
+    例: screen 里跑了 `sh run.sh`, 只返回 sh 这一层;
+    sh 再启动的 java 属于下级业务进程, 不在监控范围。"""
     if not HAS_PSUTIL:
         return []
     procs = []
     try:
         parent = psutil.Process(int(screen_pid))
-        procs = parent.children(recursive=True)
+        procs = parent.children(recursive=False)
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         pass
     return procs
@@ -505,29 +507,22 @@ def cmd_view_detail(text):
 
     children = get_child_processes(pid)
     if not children:
-        lines.append("  (无子进程)")
+        lines.append("  ✗ 未运行(无启动进程)")
         return "\n".join(lines)
 
-    # 紧凑排版: 每个进程一行「类型 状态 运行时间 内存」,
-    # 命令只显示最后一个(真正的业务进程), 去掉分隔线
-    info = None
+    # 紧凑排版: 只显示直接启动的进程, 状态用 ✔/✗ 标记, 不显示命令行
     for i, proc in enumerate(children, 1):
         info = describe_process(proc)
         if "error" in info:
-            lines.append(f"  {i}. ? 未知 ({info['error']})")
+            lines.append(f"  ✗ 已退出 ({info['error']})")
             continue
-        seg = (f"  {i}. {info['svc_type']} {info['status']} "
+        mark = "✔" if str(info["status"]).startswith("运行中") else "✗"
+        seg = (f"  {mark} {info['svc_type']} {info['status']} "
                f"{info['uptime']} 内存{info['memory_mb']}MB")
-        # 有端口才显示(端口行最容易超宽)
+        # 端口有值才追加(同行, 不另起一行)
         if info["ports"] != "无":
             seg += f" 端口{info['ports']}"
         lines.append(seg)
-    # 最后一个进程即业务主体, 附上它的命令(截断防超长)
-    if info and "error" not in info:
-        cmd = info["cmdline"]
-        if len(cmd) > 60:
-            cmd = cmd[:57] + "..."
-        lines.append(f"  命令: {cmd}")
     return "\n".join(lines)
 
 
