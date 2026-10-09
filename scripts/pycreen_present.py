@@ -332,31 +332,55 @@ HELP_TEXT = (
 )
 
 
-def sub_screen_ls():
-    """执行 screen -ls, 解析返回 (编号->PID 映射, 名称列表, 时间列表, 状态列表)。
-    screen 未安装时返回空列表(调用方显示「没有 screen 会话」)。"""
+def _run_screen_ls(cmd):
+    """跑一条 screen -ls 命令, 返回 stdout; 失败返回空串。"""
     try:
-        sub_screen = subprocess.run(
-            ["screen", "-ls"],
+        r = subprocess.run(
+            cmd,
             capture_output=True,
             text=True,
             check=False,
             shell=False,
             timeout=5,
         )
+        # screen -ls 正常时退出码也是 1(提示语在 stdout), 所以不看 returncode
+        return r.stdout or ""
     except FileNotFoundError:
         log.info("[screen] 命令未安装")
-        return {}, [], [], []
     except subprocess.TimeoutExpired:
         log.info("[screen] 命令超时")
-        return {}, [], [], []
+    except Exception as e:
+        log.info(f"[screen] {cmd[0]} 执行失败: {e}")
+    return ""
+
+
+def sub_screen_ls():
+    """执行 screen -ls, 解析返回 (编号->PID 映射, 名称列表, 时间列表, 状态列表)。
+    screen 未安装时返回空列表(调用方显示「没有 screen 会话」)。
+    若配置了免密 sudo(/etc/sudoers.d 允许 screen -ls), 会合并 root 的会话,
+    root 会话名称自动加 (root) 后缀; 未配置时静默跳过, 只显示本用户会话。"""
+    stdout = _run_screen_ls(["screen", "-ls"])
+    # root 会话: 需要 sudoers 里加 vampire2020 的 NOPASSWD screen -ls 规则
+    root_stdout = _run_screen_ls(["sudo", "-n", "screen", "-ls"])
     name_PId = []
     name_pid_name = []
     name_Time = []
     name_status = []
-    for m in PATTERN.finditer(sub_screen.stdout):
+    seen_pids = set()
+    for m in PATTERN.finditer(stdout):
+        if m.group(1) in seen_pids:
+            continue
+        seen_pids.add(m.group(1))
         name_PId.append(m.group(1))
         name_pid_name.append(m.group(2))
+        name_Time.append(m.group(3))
+        name_status.append(m.group(4))
+    for m in PATTERN.finditer(root_stdout):
+        if m.group(1) in seen_pids:
+            continue   # 同一会话两边都列出时去重
+        seen_pids.add(m.group(1))
+        name_PId.append(m.group(1))
+        name_pid_name.append(m.group(2) + "(root)")   # 标记归属
         name_Time.append(m.group(3))
         name_status.append(m.group(4))
     mapping_id = {i: pid for i, pid in enumerate(name_PId, start=1)}
@@ -439,8 +463,12 @@ def describe_process(proc):
                 "cpu_percent": proc.cpu_percent(interval=None),
                 "memory_mb": round(proc.memory_info().rss / 1024 / 1024, 2),
                 "num_threads": proc.num_threads(),
-                "cwd": proc.cwd(),
             }
+        # cwd 在 oneshot 外单独取: root 进程会 AccessDenied, 不能拖垮整条详情
+        try:
+            info["cwd"] = proc.cwd()
+        except Exception:
+            info["cwd"] = "(无权限)"
         return info
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
         return {"error": str(e), "pid": proc.pid}
