@@ -210,7 +210,8 @@ class WSClient:
             resp += chunk
         if b"101" not in resp.split(b"\r\n", 1)[0]:
             raise ConnectionError(f"WS 握手失败: {resp[:120]!r}")
-        self.sock.settimeout(None)
+        # 300s 无任何数据视为死连(NapCat 心跳约5s, 正常连接不会触发) → 抛超时触发重连
+        self.sock.settimeout(300)
 
     def _recv_exact(self, n):
         while len(self._buf) < n:
@@ -381,8 +382,11 @@ def ws_loop():
             ws.connect()
             log.info(f"[WS] 已连接 NapCat {WS_HOST}:{WS_PORT}")
             while True:
+                # ⚠️ recv() 必须在 try 外: 连接层错误(断线/半开)直接抛到外层触发重连;
+                # 之前放 try 里被 continue 吞掉, NapCat 重启后脚本假死、永不重连
+                raw = ws.recv()
                 try:
-                    ev = json.loads(ws.recv())
+                    ev = json.loads(raw)
                 except Exception:
                     continue
                 try:
