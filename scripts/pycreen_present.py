@@ -510,16 +510,31 @@ def cmd_view_detail(text):
         lines.append("  ✗ 未运行(无启动进程)")
         return "\n".join(lines)
 
-    # 紧凑排版: 只显示直接启动的进程, 状态用 ✔/✗ 标记, 不显示命令行
+    # 排版(用户模板): 启动进程一行「类型 运行中(✔) 时间」+ 内联子程序 {java: ✔}
+    # 子程序只显示名称+存活标记, 不展开详情; 端口有值才追加行尾
     for i, proc in enumerate(children, 1):
         info = describe_process(proc)
         if "error" in info:
             lines.append(f"  ✗ 已退出 ({info['error']})")
             continue
         mark = "✔" if str(info["status"]).startswith("运行中") else "✗"
-        seg = (f"  {mark} {info['svc_type']} {info['status']} "
-               f"{info['uptime']} 内存{info['memory_mb']}MB")
-        # 端口有值才追加(同行, 不另起一行)
+        status_txt = ("运行中" if mark == "✔" else str(info["status"]))
+        seg = f"  {info['svc_type']} {status_txt}({mark}) {info['uptime']}"
+        # 全部下级进程: 名称+存活标记(僵尸/不存在也标 ✗), 内联一对大括号;
+        # 只显示名字不展开详情, 故 java 这类业务进程也能被看到
+        subs = []
+        try:
+            for ch in psutil.Process(proc.pid).children(recursive=True):
+                try:
+                    alive = ch.is_running() and ch.status() != psutil.STATUS_ZOMBIE
+                    ch_mark = "✔" if alive else "✗"
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    ch_mark = "✗"
+                subs.append(f"{ch.name()}: {ch_mark}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        if subs:
+            seg += "  子程序 {" + ", ".join(subs) + "}"
         if info["ports"] != "无":
             seg += f" 端口{info['ports']}"
         lines.append(seg)
