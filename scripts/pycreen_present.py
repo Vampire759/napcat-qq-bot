@@ -501,28 +501,34 @@ def cmd_view_detail(text):
 
     pid = mapping_id[idx]
     name = names[idx - 1] if idx - 1 < len(names) else "?"
-    lines = [f"📋 服务 [{idx}] {name} (PID:{pid})"]
+    lines = [f"📋 服务 [{idx}] {name}"]
 
     children = get_child_processes(pid)
     if not children:
         lines.append("  (无子进程)")
         return "\n".join(lines)
 
-    for proc in children:
+    # 紧凑排版: 每个进程一行「类型 状态 运行时间 内存」,
+    # 命令只显示最后一个(真正的业务进程), 去掉分隔线
+    info = None
+    for i, proc in enumerate(children, 1):
         info = describe_process(proc)
         if "error" in info:
-            lines.append(f"  服务类型: ? | 状态: 未知 ({info['error']})")
+            lines.append(f"  {i}. ? 未知 ({info['error']})")
             continue
-        # 按用户要求格式: 类型/状态/运行时间/端口/CPU/MEM
-        lines.append(f"  服务类型: {info['svc_type']}")
-        lines.append(f"  状态: {info['status']}")
-        lines.append(f"  运行时间: {info['uptime']} (自 {info['start_time']})")
-        lines.append(f"  端口: {info['ports']}")
-        lines.append(f"  CPU: {info['cpu_percent']}% | 内存: {info['memory_mb']}MB | 线程: {info['num_threads']}")
-        lines.append(f"  命令: {info['cmdline'][:80]}")
-        if len(children) > 1:
-            lines.append("  ——" * 6)
-    return "\n".join(lines).rstrip("— ")
+        seg = (f"  {i}. {info['svc_type']} {info['status']} "
+               f"{info['uptime']} 内存{info['memory_mb']}MB")
+        # 有端口才显示(端口行最容易超宽)
+        if info["ports"] != "无":
+            seg += f" 端口{info['ports']}"
+        lines.append(seg)
+    # 最后一个进程即业务主体, 附上它的命令(截断防超长)
+    if info and "error" not in info:
+        cmd = info["cmdline"]
+        if len(cmd) > 60:
+            cmd = cmd[:57] + "..."
+        lines.append(f"  命令: {cmd}")
+    return "\n".join(lines)
 
 
 def handle_command(text):
