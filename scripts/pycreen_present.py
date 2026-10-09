@@ -382,18 +382,62 @@ def describe_process(proc):
         return {"error": "psutil 未安装"}
     try:
         with proc.oneshot():
+            # ---- 服务类型: 按解释器/程序归类(sh/python/java/node/其他) ----
+            first_tok = (proc.cmdline() or [""])[0]
+            exe_base = os.path.basename(first_tok)
+            if exe_base in ("bash", "sh", "dash", "zsh"):
+                svc_type = "sh"
+            elif exe_base.startswith("python"):
+                svc_type = "python"
+            elif exe_base == "java":
+                svc_type = "java"
+            elif exe_base == "node":
+                svc_type = "node"
+            else:
+                svc_type = exe_base or "未知"
+
+            # ---- 运行时长: 现在减启动时刻, 格式 x天x小时x分 ----
+            ct = proc.create_time()
+            elapsed = int(time.time() - ct)
+            days, rem = divmod(elapsed, 86400)
+            hours, rem = divmod(rem, 3600)
+            minutes = rem // 60
+            if days > 0:
+                uptime_txt = f"{days}天{hours}小时{minutes}分"
+            elif hours > 0:
+                uptime_txt = f"{hours}小时{minutes}分"
+            else:
+                uptime_txt = f"{minutes}分钟"
+
+            # ---- 监听端口: 全系统连接表里筛本 PID 的 LISTEN ----
+            ports = []
+            try:
+                for c in psutil.net_connections(kind="inet"):
+                    if c.pid == proc.pid and c.status == psutil.CONN_LISTEN \
+                            and c.laddr:
+                        ports.append(str(c.laddr.port))
+            except Exception:
+                pass   # 权限不足/平台不支持时静默跳过
+            ports = sorted(set(ports), key=int)
+
+            # ---- 状态中文化 ----
+            status_cn = {"running": "运行中", "sleeping": "运行中(空闲)",
+                         "stopped": "已停止", "zombie": "僵尸进程",
+                         "disk-sleep": "运行中(磁盘IO)"}.get(
+                             proc.status(), proc.status())
+
             info = {
                 "pid": proc.pid,
                 "name": proc.name(),
                 "cmdline": " ".join(proc.cmdline()),
-                "status": proc.status(),
+                "svc_type": svc_type,
+                "status": status_cn,
+                "uptime": uptime_txt,
+                "start_time": time.strftime("%Y-%m-%d %H:%M", time.localtime(ct)),
+                "ports": ",".join(ports) if ports else "无",
                 # interval=None 非阻塞(首次返回0.0, 后续返回两次调用间的均值)
                 "cpu_percent": proc.cpu_percent(interval=None),
                 "memory_mb": round(proc.memory_info().rss / 1024 / 1024, 2),
-                "create_time": time.strftime(
-                    "%Y-%m-%d %H:%M:%S",
-                    time.localtime(proc.create_time())
-                ),
                 "num_threads": proc.num_threads(),
                 "cwd": proc.cwd(),
             }
@@ -429,26 +473,28 @@ def cmd_view_detail(text):
 
     pid = mapping_id[idx]
     name = names[idx - 1] if idx - 1 < len(names) else "?"
-    lines = [f"📋 会话 [{idx}] PID:{pid} 名称:{name}"]
+    lines = [f"📋 服务 [{idx}] {name} (PID:{pid})"]
 
     children = get_child_processes(pid)
     if not children:
         lines.append("  (无子进程)")
         return "\n".join(lines)
 
-    lines.append(f"  子进程数: {len(children)}")
     for proc in children:
         info = describe_process(proc)
         if "error" in info:
-            lines.append(f"  - PID:{info.get('pid', '?')} 错误:{info['error']}")
-        else:
-            lines.append(
-                f"  - PID:{info['pid']} {info['name']} "
-                f"CPU:{info['cpu_percent']}% MEM:{info['memory_mb']}MB "
-                f"状态:{info['status']} 线程:{info['num_threads']}"
-            )
-            lines.append(f"    命令: {info['cmdline']}")
-    return "\n".join(lines)
+            lines.append(f"  服务类型: ? | 状态: 未知 ({info['error']})")
+            continue
+        # 按用户要求格式: 类型/状态/运行时间/端口/CPU/MEM
+        lines.append(f"  服务类型: {info['svc_type']}")
+        lines.append(f"  状态: {info['status']}")
+        lines.append(f"  运行时间: {info['uptime']} (自 {info['start_time']})")
+        lines.append(f"  端口: {info['ports']}")
+        lines.append(f"  CPU: {info['cpu_percent']}% | 内存: {info['memory_mb']}MB | 线程: {info['num_threads']}")
+        lines.append(f"  命令: {info['cmdline'][:80]}")
+        if len(children) > 1:
+            lines.append("  ——" * 6)
+    return "\n".join(lines).rstrip("— ")
 
 
 def handle_command(text):
