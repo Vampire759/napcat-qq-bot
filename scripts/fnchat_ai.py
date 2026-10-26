@@ -30,6 +30,8 @@ import urllib.request
 from collections import deque
 
 import web_tool  # 同目录: 给 AI 用的联网搜索/网页抓取(conf/ai_config.json 里可关)
+import ai_agent  # 同目录: Agent 多步工具调用(默认关)
+import ai_rules  # 同目录: 规则限制(默认关)
 
 # ============ 目录结构(与 listener.py 一致) ============
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))    # scripts/
@@ -197,34 +199,53 @@ def save_state(last_id):
 
 
 def ask_ai(history, text):
-    messages = [{"role": "system", "content": ai_personality()}]
+    """返回回答; 命中规则违禁词时返回 ""(调用方按空内容跳过)。"""
+    hit = ai_rules.blocked(text, AI_CFG)
+    if hit:
+        log.info("命中规则违禁词(%s), 不回复", hit)
+        return ""
+    system_prompt = ai_personality()
+    rules = ai_rules.rules_text(AI_CFG)
+    if rules:
+        system_prompt += ("\n\n【必须遵守的规则（来自 conf/ai_rules.md，优先于其他人格设定）】\n"
+                          + rules)
+    agent_on = ai_agent.wants_agent(AI_CFG)
+    if agent_on:
+        system_prompt = ai_agent.build_prompt(system_prompt, AI_CFG)
+    messages = [{"role": "system", "content": system_prompt}]
     messages += history
     user_content = text
-    web_ctx = web_tool.web_context(text, AI_CFG)
-    if web_ctx:
-        log.info("联网检索完成(%d字)", len(web_ctx))
-        user_content += ("\n\n【联网检索结果（仅供参考，可能过时或不完整）】\n"
-                         + web_ctx
-                         + "\n\n回答时优先依据以上检索结果；若与问题无关则忽略，"
-                           "并如实说明没有查到。")
+    if not agent_on:
+        web_ctx = web_tool.web_context(text, AI_CFG)
+        if web_ctx:
+            log.info("联网检索完成(%d字)", len(web_ctx))
+            user_content += ("\n\n【联网检索结果（仅供参考，可能过时或不完整）】\n"
+                             + web_ctx
+                             + "\n\n回答时优先依据以上检索结果；若与问题无关则忽略，"
+                               "并如实说明没有查到。")
     messages.append({"role": "user", "content": user_content})
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "stream": False,
-        "temperature": AI_TEMPERATURE,
-        "max_tokens": AI_NUM_PREDICT,
-    }
-    req = urllib.request.Request(
-        AI_API_URL.rstrip("/") + "/v1/chat/completions",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with _http.open(req, timeout=AI_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode())
-    choices = data.get("choices") or [{}]
-    answer = (choices[0].get("message") or {}).get("content", "").strip()
+
+    def _chat(msgs):
+        payload = {
+            "model": AI_MODEL,
+            "messages": msgs,
+            "stream": False,
+            "temperature": AI_TEMPERATURE,
+            "max_tokens": AI_NUM_PREDICT,
+        }
+        req = urllib.request.Request(
+            AI_API_URL.rstrip("/") + "/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _http.open(req, timeout=AI_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+        choices = data.get("choices") or [{}]
+        return (choices[0].get("message") or {}).get("content", "").strip()
+
+    answer = (ai_agent.run(_chat, messages, AI_CFG, log=log.info)
+              if agent_on else _chat(messages))
     if len(answer) > AI_MAX_CHARS:
         answer = answer[:AI_MAX_CHARS].rstrip() + "…"
     return answer

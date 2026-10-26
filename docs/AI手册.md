@@ -55,7 +55,12 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
   "web_engine": "bing",
   "web_timeout": 8,
   "web_max_context": 1200,
-  "web_cache_ttl": 600
+  "web_cache_ttl": 600,
+  "agent_enabled": false,
+  "agent_max_steps": 3,
+  "rules_enabled": false,
+  "rules_file": "conf/ai_rules.md",
+  "rules_block_keywords": []
 }
 ```
 
@@ -77,6 +82,11 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
 | `web_timeout` | 单次联网请求超时（秒，默认 8） |
 | `web_max_context` | 注入给模型的检索文本上限（字符，默认 1200） |
 | `web_cache_ttl` | 同一问题的检索缓存（秒，默认 600，避免重复请求） |
+| `agent_enabled` | **Agent 模式，默认 `false`（关闭）**；开启后可多步调用工具（搜索/读网页/取时间） |
+| `agent_max_steps` | Agent 最多调用工具步数（默认 3） |
+| `rules_enabled` | **规则限制，默认 `false`（关闭）**；开启后 `conf/ai_rules.md` 强制生效 |
+| `rules_file` | 规则 md 路径（热加载） |
+| `rules_block_keywords` | 违禁词数组，命中则**直接不回复**（仅 `rules_enabled` 开启时生效） |
 
 ### 2.1 读空气（默认必接）· 位置 + 步骤
 
@@ -128,6 +138,47 @@ systemctl --user restart napcat-listener fnchat-ai
 ```
 
 日志关键字：`联网检索完成(N字)`；没有联网时为静默跳过（不会报错）。
+
+### 2.3 Agent 模式（默认关闭）
+
+开启后模型可以**多步调用工具**，而不是一次性回答：
+
+| 工具 | 调用格式 | 作用 |
+|------|----------|------|
+| `search` | `{"tool":"search","query":"关键词"}` | 联网搜索 |
+| `fetch` | `{"tool":"fetch","url":"https://..."}` | 读取网页正文 |
+| `time` | `{"tool":"time"}` | 当前时间 |
+
+```json
+"agent_enabled": true,
+"agent_max_steps": 3
+```
+
+- 模型需要工具时输出一行 JSON；脚本执行后把【工具结果】回填给模型，模型再决定继续或给出最终回答；最多 `agent_max_steps` 步
+- **仅 QQ 群 @ 提问生效**；读空气（没 @）仍走普通单次回答，避免误触发和刷屏。微信侧（`fnchat_ai`）开启后对所有新消息生效
+- 依赖联网能力：`web_enabled=false` 时 search/fetch 会返回「联网已关闭」，只剩 `time` 可用
+- 日志关键字：`[Agent] 调用工具: {...}`、`[Agent] 工具结果(...)`
+- 风险提示：Agent 每一步都会调用一次模型，CPU 推理下会明显变慢，建议 `agent_max_steps` 保持 2~3
+
+```bash
+systemctl --user restart napcat-listener fnchat-ai
+```
+
+### 2.4 规则限制（默认关闭）
+
+开启后 `conf/ai_rules.md` 会作为**最高优先级的规则**追加到系统提示词，模型必须遵守；另可配置违禁词做硬拦截。
+
+```json
+"rules_enabled": true,
+"rules_file": "conf/ai_rules.md",
+"rules_block_keywords": ["赌博", "密码"]
+```
+
+- 规则文件从模板复制：`cp conf/ai_rules.example.md conf/ai_rules.md`，按需修改（**改完保存热加载，无需重启**）
+- `rules_block_keywords`：用户消息含这些词时**直接不回复**（QQ 与微信都跳过），仅开关开启时生效；留空 `[]` 即只做提示词约束
+- 关闭：`rules_enabled: false` 后重启 `napcat-listener` 与 `fnchat-ai`
+- 日志关键字：`命中规则违禁词(词), 不回复`
+
 
 
 ---

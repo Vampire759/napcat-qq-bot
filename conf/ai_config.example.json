@@ -15,5 +15,10 @@
   "web_engine": "bing",
   "web_timeout": 8,
   "web_max_context": 1200,
-  "web_cache_ttl": 600
+  "web_cache_ttl": 600,
+  "agent_enabled": false,
+  "agent_max_steps": 3,
+  "rules_enabled": false,
+  "rules_file": "conf/ai_rules.md",
+  "rules_block_keywords": []
 }

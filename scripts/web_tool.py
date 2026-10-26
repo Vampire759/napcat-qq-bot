@@ -153,6 +153,26 @@ def fetch_page(url, timeout=8, max_chars=1500):
     return title, text[:max_chars]
 
 
+def search(query, cfg=None, count=4):
+    """主动搜索(供 Agent 工具调用): 返回格式化文本, 失败或联网关闭时返回 ""。"""
+    if not bool(_cfg_val(cfg, "web_enabled")):
+        return ""
+    timeout = float(_cfg_val(cfg, "web_timeout"))
+    limit = int(_cfg_val(cfg, "web_max_context"))
+    engine = str(_cfg_val(cfg, "web_engine")).lower()
+    try:
+        results = (_ddg if engine == "duckduckgo" else _bing)(query, timeout, count)
+    except Exception:
+        return ""
+    if not results:
+        return ""
+    lines = [f"搜索: {query}"]
+    for i, (title, link, sn) in enumerate(results, 1):
+        lines.append(f"{i}. {title}\n   {sn}\n   {link}")
+    ctx = "\n".join(lines)
+    return ctx[:limit].rstrip() + "…" if len(ctx) > limit else ctx
+
+
 def web_context(text, cfg=None):
     """需要联网时返回可注入提示词的检索结果文本; 否则返回 ""。"""
     if not bool(_cfg_val(cfg, "web_enabled")):

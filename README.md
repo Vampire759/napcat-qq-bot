@@ -3,7 +3,7 @@
 基于 [NapCat](https://github.com/NapNeko/NapCatQQ)（QQ 协议端，Docker 部署）+ Python 标准库实现的 QQ 群机器人全家桶：
 
 - **@指令监听**（`listener.py`）：抽签/求签/一言/打卡/权限管理等，三级权限（超管/管理员/普通人白名单）+ 防刷屏冷却；未识别内容交给本地 AI 兜底，并支持「读空气」按概率主动接话
-- **本地 AI 聊天**（`listener.py` + `fnchat_ai.py`）：接入 llama.cpp / Ollama / vLLM 等 OpenAI 兼容端点，显卡自动识别、模型与人格可切换、**可联网搜索（默认开启，可关闭）**（详见 [AI手册](docs/AI手册.md)）
+- **本地 AI 聊天**（`listener.py` + `fnchat_ai.py`）：接入 llama.cpp / Ollama / vLLM 等 OpenAI 兼容端点，显卡自动识别、模型与人格可切换、**可联网搜索（默认开启，可关闭）**；可选 **Agent 多步工具调用**与**规则限制**（均默认关闭）（详见 [AI手册](docs/AI手册.md)）
 - **微信 fnchat 接入**（`fnchat_ai.py`）：本机装了 fnchat 即自动接入微信会话，与 QQ 共用同一套模型与人格
 - **登录二维码转发**（`qr_forward.py`）：QQ / 抖音登录二维码一刷新就发到微信，发不出去就保存在 `images/`
 - **零点抢第一打卡**（`group_sign.py`）：NTP 校时 + 毫秒级忙等 + 上行延迟补偿，最大化抢群签到第一
