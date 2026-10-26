@@ -1,6 +1,6 @@
 # systemd 用户级服务
 
-本目录 5 个 `.service` 是**备份源**，`ExecStart` 里的 `/opt/napcat-qq-bot` 是占位路径，
+本目录 6 个 `.service` 是**备份源**，`ExecStart` 里的 `/opt/napcat-qq-bot` 是占位路径，
 由 `install.sh` 安装时自动改写为实际目录后拷贝到 `~/.config/systemd/user/`。
 
 ## 服务清单
@@ -12,6 +12,7 @@
 | napcat-douyin-spark.service | scripts/douyin_spark.py | 抖音续火花(00:00:01) |
 | napcat-spark-status.service | scripts/spark_status.py | @查看火花 |
 | napcat-daily-image.service | scripts/daily_image.py | 每日一图 |
+| napcat-web-panel.service | scripts/web_panel.py | 网页管理面板(8090) |
 
 ## 手动安装 / 恢复
 
@@ -21,7 +22,7 @@ for u in systemd/napcat-*.service; do
     sed "s|/opt/napcat-qq-bot|$PWD|g" "$u" > ~/.config/systemd/user/$(basename "$u")
 done
 systemctl --user daemon-reload
-systemctl --user enable --now napcat-listener napcat-sign napcat-spark-status napcat-daily-image
+systemctl --user enable --now napcat-listener napcat-sign napcat-spark-status napcat-daily-image napcat-web-panel
 # 抖音脚本需先扫码登录: python3 scripts/douyin_qrlogin.py
 systemctl --user enable --now napcat-douyin-spark
 # 开机自启(重启后免登录):
