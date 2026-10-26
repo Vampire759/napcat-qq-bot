@@ -7,8 +7,13 @@
   "history_msgs": 8,
   "temperature": 0.7,
   "num_predict": 512,
-  "read_air_prob": 0.9,
+  "read_air_prob": 1.0,
   "read_air_min_interval": 90,
   "read_air_min_chars": 6,
-  "personality_file": "conf/personality.md"
+  "personality_file": "conf/personality.md",
+  "web_enabled": true,
+  "web_engine": "bing",
+  "web_timeout": 8,
+  "web_max_context": 1200,
+  "web_cache_ttl": 600
 }

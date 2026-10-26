@@ -29,6 +29,8 @@ import urllib.error
 import urllib.request
 from collections import deque
 
+import web_tool  # 同目录: 给 AI 用的联网搜索/网页抓取(conf/ai_config.json 里可关)
+
 # ============ 目录结构(与 listener.py 一致) ============
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))    # scripts/
 ROOT_DIR = os.path.dirname(BASE_DIR)                     # 项目根
@@ -197,7 +199,15 @@ def save_state(last_id):
 def ask_ai(history, text):
     messages = [{"role": "system", "content": ai_personality()}]
     messages += history
-    messages.append({"role": "user", "content": text})
+    user_content = text
+    web_ctx = web_tool.web_context(text, AI_CFG)
+    if web_ctx:
+        log.info("联网检索完成(%d字)", len(web_ctx))
+        user_content += ("\n\n【联网检索结果（仅供参考，可能过时或不完整）】\n"
+                         + web_ctx
+                         + "\n\n回答时优先依据以上检索结果；若与问题无关则忽略，"
+                           "并如实说明没有查到。")
+    messages.append({"role": "user", "content": user_content})
     payload = {
         "model": AI_MODEL,
         "messages": messages,

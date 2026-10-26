@@ -47,10 +47,15 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
   "history_msgs": 8,
   "temperature": 0.7,
   "num_predict": 512,
-  "read_air_prob": 0.9,
+  "read_air_prob": 1.0,
   "read_air_min_interval": 90,
   "read_air_min_chars": 6,
-  "personality_file": "conf/personality.md"
+  "personality_file": "conf/personality.md",
+  "web_enabled": true,
+  "web_engine": "bing",
+  "web_timeout": 8,
+  "web_max_context": 1200,
+  "web_cache_ttl": 600
 }
 ```
 
@@ -63,35 +68,67 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
 | `max_chars` | 回复最大字符数，超出截断加 `…` |
 | `history_msgs` | 每个群/会话保留的上下文条数 |
 | `temperature` / `num_predict` | 采样温度 / 最大生成 token |
-| `read_air_prob` | **读空气概率，0.9 = 90%**；没被 @ 也主动接话的概率（取值 0~1） |
+| `read_air_prob` | **读空气概率，1.0 = 100%（必接）**；没被 @ 也主动接话的概率（取值 0~1） |
 | `read_air_min_interval` | 同一群两次主动接话最小间隔（秒，防刷屏） |
 | `read_air_min_chars` | 消息太短（默认 <6 字）不接话 |
 | `personality_file` | 人格 md 路径（相对项目根或绝对路径） |
+| `web_enabled` | **联网总开关，默认 `true`**；改 `false` 即完全离线（只用本地模型知识回答） |
+| `web_engine` | 搜索引擎：`bing`（默认，国内可直连）/ `duckduckgo` |
+| `web_timeout` | 单次联网请求超时（秒，默认 8） |
+| `web_max_context` | 注入给模型的检索文本上限（字符，默认 1200） |
+| `web_cache_ttl` | 同一问题的检索缓存（秒，默认 600，避免重复请求） |
 
-### 2.1 怎么调「读空气」概率（位置 + 步骤）
+### 2.1 读空气（默认必接）· 位置 + 步骤
 
-改一个数字即可，**位置**：`conf/ai_config.json` 里的 `read_air_prob`（模板是 `conf/ai_config.example.json`，新部署时复制生效）。
+**当前默认 `read_air_prob = 1.0`：群里没 @ 机器人也会接话（必接）**。位置：`conf/ai_config.json` 的 `read_air_prob`（模板 `conf/ai_config.example.json`，新部署时复制生效）。
 
 ```bash
 cd ~/NapCatQQ-dokcer
-# 当前 0.9 = 90%（不 @ 机器人也有九成概率接话）
-#   1.0 = 100% 必接话；0.5 = 一半概率；0 = 关闭读空气（只回 @）
+# 取值含义:
+#   1.0 = 必接(当前默认)     0.5 = 一半概率     0 = 关闭读空气(只回 @)
 python3 - <<'PY'
-import json,io
+import json
 p="conf/ai_config.json"
 d=json.load(open(p,encoding="utf-8"))
-d["read_air_prob"]=0.9
+d["read_air_prob"]=1.0
 json.dump(d,open(p,"w",encoding="utf-8"),ensure_ascii=False,indent=2)
 PY
 systemctl --user restart napcat-listener   # 配置只在启动时读取，必须重启
 ```
 
-配套参数（怕太吵时一起调）：
+配套参数（嫌太吵时一起调）：
 
-- `read_air_min_interval`：同群最短间隔，默认 90 秒（90% 下建议保持或调大到 180）
+- `read_air_min_interval`：同群最短间隔，默认 90 秒（必接模式下建议 180~300，否则会显得刷屏）
 - `read_air_min_chars`：太短的消息不接，默认 6 字
 
 > `read_air_prob` 只作用于 **QQ 群监听**（`listener.py`）；微信侧由 `fnchat_ai.py` 对每条新消息直接回复，不受这个参数影响。
+
+### 2.2 联网功能（默认开启，可关闭）
+
+AI 可以上网搜资料/读网页后再回答，**默认开启**，开关同样在 `conf/ai_config.json`：
+
+```json
+"web_enabled": true,
+"web_engine": "bing",
+"web_timeout": 8,
+"web_max_context": 1200,
+"web_cache_ttl": 600
+```
+
+- **关闭联网**：把 `web_enabled` 改成 `false`，重启 `napcat-listener` 与 `fnchat-ai` 即可完全离线（只用模型自身知识）
+- **触发时机**：不是每条消息都搜。消息里带链接（会抓该网页正文）、明确说「搜索/查一下/联网/百度一下」、或属于时效性问题（今天/现在/最新/新闻/天气/价格/汇率/股价/几点等）才联网；闲聊不搜，避免拖慢回复
+- **结果注入**：检索到的标题+摘要（或网页正文摘录）会以「联网检索结果」附加在提问后面交给模型，并要求模型优先依据资料回答、查不到就如实说明
+- **缓存**：同一问题 `web_cache_ttl` 秒内不再重复请求
+- **换引擎**：`web_engine` 可选 `bing`（默认，国内可直连）/ `duckduckgo`（需能访问 duckduckgo.com）
+
+改完重启：
+
+```bash
+systemctl --user restart napcat-listener fnchat-ai
+```
+
+日志关键字：`联网检索完成(N字)`；没有联网时为静默跳过（不会报错）。
+
 
 ---
 
@@ -189,7 +226,8 @@ systemctl --user restart napcat-listener fnchat-ai
 |------|------|
 | `@机器人 任意未识别内容` | 交给 AI 回答（指令优先，识别不到才走 AI） |
 | `@机器人 ai`（单独一个 ai，含大小写/标点变体） | **不回复** |
-| 群里正常聊天（没 @ 机器人） | 按 `read_air_prob`（默认 90%）主动接话；同群 90 秒内最多一次；消息 <6 字不接；该群被「关闭@功能」则跳过 |
+| 群里正常聊天（没 @ 机器人） | 按 `read_air_prob`（默认 1.0 = 必接）主动接话；同群 90 秒内最多一次；消息 <6 字不接；该群被「关闭@功能」则跳过 |
+| 提问涉及时效信息（天气/新闻/价格等） | 先联网检索（`web_enabled`，默认开），把资料附在提问后交给模型，再回答 |
 | 读空气时模型判断不该插嘴 | 模型输出 `<SKIP>`，静默不发 |
 
 对应日志关键字：`[AI] 入队(at/air)`、`[AI] 回复(at/air)`、`读空气后决定不接话`。

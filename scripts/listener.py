@@ -49,6 +49,8 @@ import resource
 import queue
 import threading
 
+import web_tool  # 同目录: 给 AI 用的联网搜索/网页抓取(conf/ai_config.json 里可关)
+
 # ============ 内存限制 ============
 MEM_LIMIT_MB = 96
 try:
@@ -133,10 +135,15 @@ AI_DEFAULTS = {
     "history_msgs": 8,                     # 每个群保留的上下文消息条数
     "temperature": 0.7,
     "num_predict": 512,
-    "read_air_prob": 0.4,                  # 「读空气」: 没被@也主动接话的概率(0~1)
+    "read_air_prob": 1.0,                  # 「读空气」: 没被@也主动接话的概率(0~1, 1=必接)
     "read_air_min_interval": 90,           # 同一群两次主动接话的最小间隔(秒, 防刷屏)
     "read_air_min_chars": 6,               # 太短的消息不接话
     "personality_file": "conf/personality.md",
+    "web_enabled": True,                   # AI 联网总开关(false = 纯本地模型, 完全不联网)
+    "web_engine": "bing",                  # bing(默认, 国内可直连) | duckduckgo
+    "web_timeout": 8,                      # 单次联网请求超时(秒)
+    "web_max_context": 1200,               # 注入给模型的检索文本上限(字符)
+    "web_cache_ttl": 600,                  # 同一问题的检索缓存(秒)
     "fallback_prompt": (
         "你是QQ群里的AI助手“今日小助手”。"
         "请用简体中文、口语化、简洁地回答，通常不超过200字。"
@@ -454,8 +461,15 @@ def _ai_handle(group_id, user_id, user_name, text, mode="at"):
         system_prompt += AIR_EXTRA_PROMPT
     messages = [{"role": "system", "content": system_prompt}]
     messages += history
-    messages.append({"role": "user",
-                     "content": f"{user_name}(QQ {user_id})：{text}"})
+    user_content = f"{user_name}(QQ {user_id})：{text}"
+    web_ctx = web_tool.web_context(text, AI_CFG)
+    if web_ctx:
+        log.info(f"[AI] 群{group_id} 联网检索完成({len(web_ctx)}字)")
+        user_content += ("\n\n【联网检索结果（仅供参考，可能过时或不完整）】\n"
+                         + web_ctx
+                         + "\n\n回答时优先依据以上检索结果；若与问题无关则忽略，"
+                           "并如实说明没有查到。")
+    messages.append({"role": "user", "content": user_content})
     payload = {
         "model": AI_MODEL,
         "messages": messages,
