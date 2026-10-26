@@ -7,7 +7,7 @@
   "history_msgs": 8,
   "temperature": 0.7,
   "num_predict": 512,
-  "read_air_prob": 0.4,
+  "read_air_prob": 0.9,
   "read_air_min_interval": 90,
   "read_air_min_chars": 6,
   "personality_file": "conf/personality.md"

@@ -47,7 +47,7 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
   "history_msgs": 8,
   "temperature": 0.7,
   "num_predict": 512,
-  "read_air_prob": 0.4,
+  "read_air_prob": 0.9,
   "read_air_min_interval": 90,
   "read_air_min_chars": 6,
   "personality_file": "conf/personality.md"
@@ -63,10 +63,35 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
 | `max_chars` | 回复最大字符数，超出截断加 `…` |
 | `history_msgs` | 每个群/会话保留的上下文条数 |
 | `temperature` / `num_predict` | 采样温度 / 最大生成 token |
-| `read_air_prob` | **读空气概率，0.4 = 40%**；没被 @ 也主动接话的概率 |
+| `read_air_prob` | **读空气概率，0.9 = 90%**；没被 @ 也主动接话的概率（取值 0~1） |
 | `read_air_min_interval` | 同一群两次主动接话最小间隔（秒，防刷屏） |
 | `read_air_min_chars` | 消息太短（默认 <6 字）不接话 |
 | `personality_file` | 人格 md 路径（相对项目根或绝对路径） |
+
+### 2.1 怎么调「读空气」概率（位置 + 步骤）
+
+改一个数字即可，**位置**：`conf/ai_config.json` 里的 `read_air_prob`（模板是 `conf/ai_config.example.json`，新部署时复制生效）。
+
+```bash
+cd ~/NapCatQQ-dokcer
+# 当前 0.9 = 90%（不 @ 机器人也有九成概率接话）
+#   1.0 = 100% 必接话；0.5 = 一半概率；0 = 关闭读空气（只回 @）
+python3 - <<'PY'
+import json,io
+p="conf/ai_config.json"
+d=json.load(open(p,encoding="utf-8"))
+d["read_air_prob"]=0.9
+json.dump(d,open(p,"w",encoding="utf-8"),ensure_ascii=False,indent=2)
+PY
+systemctl --user restart napcat-listener   # 配置只在启动时读取，必须重启
+```
+
+配套参数（怕太吵时一起调）：
+
+- `read_air_min_interval`：同群最短间隔，默认 90 秒（90% 下建议保持或调大到 180）
+- `read_air_min_chars`：太短的消息不接，默认 6 字
+
+> `read_air_prob` 只作用于 **QQ 群监听**（`listener.py`）；微信侧由 `fnchat_ai.py` 对每条新消息直接回复，不受这个参数影响。
 
 ---
 
@@ -164,7 +189,7 @@ systemctl --user restart napcat-listener fnchat-ai
 |------|------|
 | `@机器人 任意未识别内容` | 交给 AI 回答（指令优先，识别不到才走 AI） |
 | `@机器人 ai`（单独一个 ai，含大小写/标点变体） | **不回复** |
-| 群里正常聊天（没 @ 机器人） | 按 `read_air_prob`（默认 40%）主动接话；同群 90 秒内最多一次；消息 <6 字不接；该群被「关闭@功能」则跳过 |
+| 群里正常聊天（没 @ 机器人） | 按 `read_air_prob`（默认 90%）主动接话；同群 90 秒内最多一次；消息 <6 字不接；该群被「关闭@功能」则跳过 |
 | 读空气时模型判断不该插嘴 | 模型输出 `<SKIP>`，静默不发 |
 
 对应日志关键字：`[AI] 入队(at/air)`、`[AI] 回复(at/air)`、`读空气后决定不接话`。
