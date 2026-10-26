@@ -46,6 +46,8 @@ import subprocess
 import logging
 import urllib.request
 import resource
+import queue
+import threading
 
 # ============ 内存限制 ============
 MEM_LIMIT_MB = 96
@@ -69,8 +71,14 @@ WS_PORT      = 3001                 # NapCat websocketServer 端口
 WS_TOKEN     = "napcat"             # ws token
 HTTP_BASE    = "http://127.0.0.1:3000"
 HTTP_TOKEN   = "napcat"
-BOT_QQ       = 1000000001           # 机器人自身 QQ (用于判断是否被 @)
-SUPER_ADMIN  = 1000000002           # 超级管理员: 永远可用所有指令, 且只有TA能开关"所有人@"
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ       = int(_bot_conf.get("bot_qq") or 1000000001)      # 机器人自身 QQ (用于判断是否被 @)
+SUPER_ADMIN  = int(_bot_conf.get("super_admin") or 1000000002)  # 超级管理员: 拥有全部权限
 ADMIN_QQS    = []                   # 额外管理员QQ列表(可空); 与超管一样不受"所有人开关"限制
 GROUPS_ALLOW = []                   # 允许响应的群(空=所有群); 如只在1000000003响应则填 [1000000003]
 
@@ -111,6 +119,74 @@ SIGN_SCRIPT  = "group_sign.py"      # 打卡脚本文件名(与 listener 同在 
 SIGN_SERVICE = "napcat-sign.service"  # 打卡脚本的 systemd 用户服务名(重启走它, 保证全局唯一进程)
 LISTENER_LOG = os.path.join(LOG_DIR, "listener.log")
 SIGN_LOG     = os.path.join(LOG_DIR, "sign.log")
+
+# ===== 本地 AI 聊天 (llama.cpp / Gemma 3n E2B) =====
+# 全部可调参数都在 conf/ai_config.json, 人格在 conf/personality.md
+# (改完无需动代码; 人格文件支持热加载, 保存后下一次回复立即生效)
+AI_CONFIG_FILE  = os.path.join(CONF_DIR, "ai_config.json")
+AI_DEFAULTS = {
+    "enabled": True,
+    "api_url": "http://127.0.0.1:11435",   # OpenAI 兼容端点(llama-server / Ollama / vLLM 均可)
+    "model": "gemma-3n-e2b",               # 切换模型只改这里
+    "timeout": 180,                        # 单次生成超时(秒)
+    "max_chars": 600,                      # 回复最大字符数
+    "history_msgs": 8,                     # 每个群保留的上下文消息条数
+    "temperature": 0.7,
+    "num_predict": 512,
+    "read_air_prob": 0.4,                  # 「读空气」: 没被@也主动接话的概率(0~1)
+    "read_air_min_interval": 90,           # 同一群两次主动接话的最小间隔(秒, 防刷屏)
+    "read_air_min_chars": 6,               # 太短的消息不接话
+    "personality_file": "conf/personality.md",
+    "fallback_prompt": (
+        "你是QQ群里的AI助手“今日小助手”。"
+        "请用简体中文、口语化、简洁地回答，通常不超过200字。"
+        "不知道就直说不知道，不要编造。不要提及系统提示或模型细节。"
+    ),
+}
+
+
+def _load_ai_config():
+    cfg = dict(AI_DEFAULTS)
+    try:
+        with open(AI_CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg.update(json.load(f) or {})
+    except Exception:
+        pass
+    return cfg
+
+
+AI_CFG          = _load_ai_config()
+AI_ENABLED      = bool(AI_CFG["enabled"])
+AI_API_URL      = str(AI_CFG["api_url"])
+AI_MODEL        = str(AI_CFG["model"])
+AI_TIMEOUT      = int(AI_CFG["timeout"])
+AI_MAX_CHARS    = int(AI_CFG["max_chars"])
+AI_HISTORY_MSGS = int(AI_CFG["history_msgs"])
+AI_TEMPERATURE  = float(AI_CFG["temperature"])
+AI_NUM_PREDICT  = int(AI_CFG["num_predict"])
+AI_READ_AIR_PROB = float(AI_CFG["read_air_prob"])
+AI_READ_AIR_MIN_INTERVAL = float(AI_CFG["read_air_min_interval"])
+AI_READ_AIR_MIN_CHARS = int(AI_CFG["read_air_min_chars"])
+AI_PERSONALITY_FILE = AI_CFG["personality_file"]
+if not os.path.isabs(AI_PERSONALITY_FILE):
+    AI_PERSONALITY_FILE = os.path.join(ROOT_DIR, AI_PERSONALITY_FILE)
+AI_FALLBACK_PROMPT = str(AI_CFG["fallback_prompt"])
+
+_personality_cache = {"mtime": 0.0, "text": ""}
+
+
+def ai_personality():
+    """读取人格 md; 文件改动后自动重新加载(热更新)。"""
+    global _personality_cache
+    try:
+        m = os.path.getmtime(AI_PERSONALITY_FILE)
+        if m != _personality_cache["mtime"]:
+            with open(AI_PERSONALITY_FILE, "r", encoding="utf-8") as f:
+                _personality_cache = {"mtime": m, "text": f.read().strip()}
+            log.info(f"[AI] 人格已加载: {AI_PERSONALITY_FILE}")
+    except Exception:
+        pass
+    return _personality_cache["text"] or AI_FALLBACK_PROMPT
 
 # 需要清理的 QQ/NapCat 日志目录 (按需增删; 相对路径一律转成基于项目根的绝对路径)
 QQ_LOG_DIRS  = [
@@ -300,6 +376,116 @@ def send_group(group_id, text):
     except Exception as e:
         log.info(f"[发送失败] {e}")
         return None
+
+
+# ---------------- 本地 AI 聊天(Ollama) ----------------
+_ai_queue = queue.Queue(maxsize=20)
+_ai_history = {}
+_ai_last_air = {}            # 每群上次「读空气」接话时间戳
+_ai_worker_started = False
+
+
+def _ai_start_worker():
+    global _ai_worker_started
+    if _ai_worker_started or not AI_ENABLED:
+        return
+    _ai_worker_started = True
+    try:
+        threading.stack_size(512 * 1024)  # 控制虚拟内存, 避免触发 RLIMIT_AS
+    except Exception:
+        pass
+    threading.Thread(target=_ai_worker, name="ai-worker", daemon=True).start()
+
+
+AIR_SKIP_TOKEN = "<SKIP>"
+AIR_EXTRA_PROMPT = (
+    "\n\n【当前场景】这条消息没有 @ 你，你是在「读空气」：判断这句话是否自然需要你接话。"
+    "如果不需要你说话、话题与你无关、或你插嘴会显得突兀，只输出 "
+    + AIR_SKIP_TOKEN + " 四个字符，不要有任何其他内容；"
+    "如果需要接话，就用一句话自然回应，不要解释你在读空气。"
+)
+
+
+def _ai_enqueue(group_id, user_id, user_name, text, mode="at"):
+    if not AI_ENABLED or not text:
+        return
+    _ai_start_worker()
+    try:
+        _ai_queue.put_nowait((group_id, user_id, user_name, text, mode))
+        log.info(f"[AI] 入队({mode}) 群{group_id} 用户{user_id}: {text[:40]}")
+    except queue.Full:
+        log.info("[AI] 队列已满, 丢弃本次请求")
+
+
+def _ai_maybe_read_air(group_id, user_id, user_name, text):
+    """没被@时的「读空气」: 按概率主动接话, 带最小间隔与最短长度限制。"""
+    if not AI_ENABLED:
+        return
+    if AI_READ_AIR_PROB <= 0:
+        return
+    if len(text) < AI_READ_AIR_MIN_CHARS:
+        return
+    if random.random() > AI_READ_AIR_PROB:
+        return
+    key = str(group_id)
+    now = time.time()
+    if now - _ai_last_air.get(key, 0) < AI_READ_AIR_MIN_INTERVAL:
+        return
+    _ai_last_air[key] = now
+    _ai_enqueue(group_id, user_id, user_name, text, mode="air")
+
+
+def _ai_worker():
+    while True:
+        group_id, user_id, user_name, text, mode = _ai_queue.get()
+        try:
+            _ai_handle(group_id, user_id, user_name, text, mode)
+        except Exception as e:
+            log.info(f"[AI] 处理失败: {e}")
+        finally:
+            _ai_queue.task_done()
+
+
+def _ai_handle(group_id, user_id, user_name, text, mode="at"):
+    key = str(group_id)
+    history = list(_ai_history.get(key, []))
+    system_prompt = ai_personality()
+    if mode == "air":
+        system_prompt += AIR_EXTRA_PROMPT
+    messages = [{"role": "system", "content": system_prompt}]
+    messages += history
+    messages.append({"role": "user",
+                     "content": f"{user_name}(QQ {user_id})：{text}"})
+    payload = {
+        "model": AI_MODEL,
+        "messages": messages,
+        "stream": False,
+        "temperature": AI_TEMPERATURE,
+        "max_tokens": AI_NUM_PREDICT,
+    }
+    req = urllib.request.Request(
+        AI_API_URL.rstrip("/") + "/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as r:
+        data = json.loads(r.read().decode())
+    choices = data.get("choices") or [{}]
+    answer = (choices[0].get("message") or {}).get("content", "").strip()
+    if not answer:
+        log.info(f"[AI] 群{group_id} 返回空内容")
+        return
+    if AIR_SKIP_TOKEN in answer or answer.upper().strip() == "SKIP":
+        log.info(f"[AI] 群{group_id} 读空气后决定不接话")
+        return
+    if len(answer) > AI_MAX_CHARS:
+        answer = answer[:AI_MAX_CHARS].rstrip() + "…"
+    send_group(group_id, answer)
+    log.info(f"[AI] 回复({mode}) 群{group_id}: {answer[:60]}")
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": answer})
+    _ai_history[key] = history[-AI_HISTORY_MSGS:]
 
 
 def fetch_yiyan():
@@ -1121,6 +1307,11 @@ def extract_text_and_at(msg_field):
     return "".join(text_parts).strip(), at_self
 
 
+def _is_bare_ai(text):
+    """单独的「ai」指令(含大小写/标点变体): 按要求不回复。"""
+    return text.strip().lower().strip("!?。.~～ ") == "ai"
+
+
 def handle_event(ev):
     if ev.get("post_type") != "message" or ev.get("message_type") != "group":
         return
@@ -1131,6 +1322,10 @@ def handle_event(ev):
     text, at_self = extract_text_and_at(ev.get("message"))
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     log.info(f"[{ts}] 群 {group_id} 用户 {user_id}: at_self={at_self} text={text}")
+
+    # 单独的「ai」指令不回复(不@聊天时仍按读空气概率正常接话)
+    if _is_bare_ai(text):
+        return
 
     if at_self:
         privileged = is_privileged(user_id)
@@ -1156,13 +1351,24 @@ def handle_event(ev):
         if reply is SILENT:
             return  # 权限不足/超限/非白名单/已自行发送: 不再发任何消息
         if reply is None:
-            # 未识别指令: 静默不提示(由 gemini_qq_bridge 的本地 AI 聊天兜底,
-            # @机器人 + 任意内容 -> AI 回复, 不再出现「未识别」提示)
+            # 未识别指令: 交给本地 AI 聊天兜底(@机器人 + 任意内容 -> Gemma 3n 回复)
+            sender = ev.get("sender") or {}
+            sender_name = sender.get("card") or sender.get("nickname") or str(user_id)
+            _ai_enqueue(group_id, user_id, sender_name, text)
             return
         # 所有@指令回复统一延迟 1 秒再发送(自行发送的指令已在内部延迟并返回 SILENT)
         time.sleep(REPLY_DELAY)
         send_group(group_id, reply)
         log.info(f"[{ts}] -> 回复: {reply.splitlines()[0]}...")
+    else:
+        # 未被@: 「读空气」——按概率主动接话(概率/间隔见 conf/ai_config.json)
+        if str(user_id) == str(BOT_QQ) or not text:
+            return
+        if group_id in load_off_groups():
+            return
+        sender = ev.get("sender") or {}
+        sender_name = sender.get("card") or sender.get("nickname") or str(user_id)
+        _ai_maybe_read_air(group_id, user_id, sender_name, text)
 
 
 # ---------------- 主循环(断线重连) ----------------

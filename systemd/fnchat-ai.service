@@ -1,0 +1,14 @@
+[Unit]
+Description=FnChat AI 助手 (与 listener 共用 conf/ai_config.json + conf/personality.md)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/fnchat_ai.py
+Restart=always
+RestartSec=5
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

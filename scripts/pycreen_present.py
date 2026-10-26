@@ -76,8 +76,14 @@ for _d in (CONF_DIR, LOG_DIR, IMAGE_DIR):
 # ============ 配置区(按需修改) ============
 WS_HOST, WS_PORT, WS_TOKEN = "127.0.0.1", 3001, "napcat"
 HTTP_BASE, HTTP_TOKEN      = "http://127.0.0.1:3000", "napcat"
-BOT_QQ      = 1000000001
-SUPER_ADMIN = 1000000002
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ      = int(_bot_conf.get("bot_qq") or 1000000001)
+SUPER_ADMIN = int(_bot_conf.get("super_admin") or 1000000002)
 ALLOW_GROUPS = []
 
 LOCK_FILE   = os.path.join(BASE_DIR, ".pycreen_present.lock")
@@ -360,7 +366,7 @@ def sub_screen_ls():
     若配置了免密 sudo(/etc/sudoers.d 允许 screen -ls), 会合并 root 的会话,
     root 会话名称自动加 (root) 后缀; 未配置时静默跳过, 只显示本用户会话。"""
     stdout = _run_screen_ls(["screen", "-ls"])
-    # root 会话: 需要 sudoers 里加 vampire2020 的 NOPASSWD screen -ls 规则
+    # root 会话: 需要 sudoers 里给当前用户加 NOPASSWD screen -ls 规则
     root_stdout = _run_screen_ls(["sudo", "-n", "screen", "-ls"])
     name_PId = []
     name_pid_name = []

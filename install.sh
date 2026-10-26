@@ -97,12 +97,17 @@ BOT_QQ_IN="${BOT_QQ_IN:-1000000001}"
 SUPER_ADMIN_IN="${SUPER_ADMIN_IN:-1000000002}"
 TOKEN_IN="${TOKEN_IN:-napcat}"
 
+mkdir -p conf
+python3 - "$BOT_QQ_IN" "$SUPER_ADMIN_IN" <<'PY'
+import json, sys
+bot, admin = int(sys.argv[1]), int(sys.argv[2])
+with open("conf/bot.json", "w", encoding="utf-8") as f:
+    json.dump({"bot_qq": bot, "super_admin": admin}, f, ensure_ascii=False, indent=2)
+PY
 if [ "$BOT_QQ_IN" = "1000000001" ]; then
-    warn "机器人 QQ 未填写(仍为占位 1000000001), 部署后请手动改 scripts/ 内配置区"
+    warn "机器人 QQ 未填写(仍为占位 1000000001), 部署后请修改 conf/bot.json"
 else
-    sed -i "s/1000000001/${BOT_QQ_IN}/g" scripts/*.py
-    sed -i "s/1000000002/${SUPER_ADMIN_IN}/g" scripts/*.py
-    info "已写入 机器人=${BOT_QQ_IN} 管理员=${SUPER_ADMIN_IN}"
+    info "已写入 conf/bot.json 机器人=${BOT_QQ_IN} 管理员=${SUPER_ADMIN_IN}"
 fi
 if [ "$TOKEN_IN" != "napcat" ]; then
     # 只替换含 TOKEN 字样行里的 "napcat", 不动服务名/镜像名等无关字样
@@ -122,17 +127,97 @@ for f in conf/*.example.json; do
         info "生成 $target"
     fi
 done
+# 人格模板(改 conf/personality.md 即可换人格, 无需改代码)
+for f in conf/*.example.md; do
+    [ -e "$f" ] || continue
+    target="conf/$(basename "$f" .example.md).md"
+    if [ ! -e "$target" ]; then
+        cp "$f" "$target"
+        info "生成 $target"
+    fi
+done
 
 # ============================================================
 # 第 4 步: 安装 systemd 用户级服务 (改写为实际路径)
 # ============================================================
 info "安装 systemd 用户级服务..."
 mkdir -p "$HOME/.config/systemd/user"
-for u in systemd/napcat-*.service; do
+for u in systemd/*.service; do
     sed "s|/opt/napcat-qq-bot|${PROJECT_DIR}|g" "$u" > "$HOME/.config/systemd/user/$(basename "$u")"
 done
 systemctl --user daemon-reload
 info "服务定义已安装并 daemon-reload"
+
+# ============================================================
+# 第 4.5 步: AI 助手 + fnchat(微信)自动接入
+#   • 显卡自动识别: 有显卡走 GPU, 没有自动 CPU(见 scripts/start_ai.sh)
+#   • 本机已装 fnchat(8033)则自动接入微信, 并把登录二维码转发到微信
+# ============================================================
+ENABLE_AI=""
+ENABLE_FNCHAT=""
+echo ""
+echo "=============================================="
+echo " AI 助手 / 微信 fnchat (可选, 直接回车 = 跳过)"
+echo "=============================================="
+
+GPU_INFO="未检测到独显(将使用 CPU 推理)"
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qi gpu; then
+    GPU_INFO="$(nvidia-smi -L 2>/dev/null | head -n 1) (CUDA)"
+elif ls /dev/dri/renderD* >/dev/null 2>&1; then
+    GPU_INFO="检测到 /dev/dri 渲染设备(AMD/Intel; 需 llama-server 带 Vulkan/ROCm 支持)"
+fi
+info "显卡检测: $GPU_INFO"
+
+LLAMA_BIN_DEFAULT="$HOME/llamacpp/bin/llama-server"
+MODEL_DEFAULT="$HOME/models/gemma-3n-E2B-it-Q4_K_M.gguf"
+if [ -x "$LLAMA_BIN_DEFAULT" ] && [ -f "$MODEL_DEFAULT" ]; then
+    info "检测到本地模型服务: $LLAMA_BIN_DEFAULT + $MODEL_DEFAULT"
+    read -r -p "安装并启用 llama-ai 服务(自动显卡/CPU, 端口 11435)? [Y/n]: " DO_AI
+    if [ "${DO_AI:-y}" != "n" ]; then
+        ENABLE_AI="llama-ai.service"
+    fi
+else
+    warn "未检测到本地模型: $LLAMA_BIN_DEFAULT / $MODEL_DEFAULT"
+    echo "  想启用 QQ/微信 AI 的话, 先编译 llama.cpp 到 ~/llamacpp 并下载 gguf 到 ~/models,"
+    echo "  然后重跑本脚本; 或直接改 conf/ai_config.json 指向你自己的 OpenAI 兼容端点。"
+fi
+
+# --- fnchat 自动接入(本机 8033 端口有服务就认为已安装) ---
+FNCHAT_PORT=8033
+FNCHAT_UP=0
+if command -v curl >/dev/null 2>&1; then
+    CODE="$(curl -s -o /dev/null -m 3 -w '%{http_code}' \
+            "http://127.0.0.1:${FNCHAT_PORT}/api/health" 2>/dev/null || true)"
+    case "${CODE:-000}" in
+        000|"") FNCHAT_UP=0 ;;
+        *)      FNCHAT_UP=1 ;;
+    esac
+fi
+if [ "$FNCHAT_UP" = "1" ]; then
+    info "检测到本机 fnchat (127.0.0.1:${FNCHAT_PORT}), 可自动接入微信"
+    read -r -p "接入 fnchat 微信 AI + 二维码转发? [Y/n]: " DO_FN
+    if [ "${DO_FN:-y}" != "n" ]; then
+        read -r -p "fnchat 管理员账号: " FN_USER
+        read -r -s -p "fnchat 管理员密码: " FN_PASS; echo ""
+        if [ -n "${FN_USER:-}" ] && [ -n "${FN_PASS:-}" ]; then
+            python3 - "$FN_USER" "$FN_PASS" "$FNCHAT_PORT" <<'PY'
+import json, sys
+user, pwd, port = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = {"base_url": f"http://127.0.0.1:{port}", "username": user,
+       "password": pwd, "channel": "official", "poll_seconds": 3}
+with open("conf/fnchat.json", "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+PY
+            info "已写入 conf/fnchat.json (密码仅保存在本机, 不入库)"
+            ENABLE_FNCHAT="fnchat-ai.service qr-forward.service"
+        else
+            warn "账号或密码为空, 跳过 fnchat 接入(之后可手动填写 conf/fnchat.json)"
+        fi
+    fi
+else
+    warn "未检测到本机 fnchat(:${FNCHAT_PORT}); 装好 fnchat 后重跑本脚本即可自动接入"
+    echo "  二维码仍会保存在 images/ 目录下, 可自行发给别人扫码。"
+fi
 
 # ============================================================
 # 第 5 步: NapCat 容器 (可选, 已有可跳过)
@@ -184,6 +269,10 @@ read -r -p "立即启动 4 个基础服务(监听/打卡/火花状态/每日一�
 if [ "${DO_START:-y}" != "n" ]; then
     systemctl --user enable --now napcat-listener.service napcat-sign.service \
               napcat-spark-status.service napcat-daily-image.service
+    [ -n "$ENABLE_AI" ] && systemctl --user enable --now $ENABLE_AI \
+        || true
+    [ -n "$ENABLE_FNCHAT" ] && systemctl --user enable --now $ENABLE_FNCHAT \
+        || true
     systemctl --user list-units 'napcat-*' --no-pager | sed -n '1,8p'
 fi
 

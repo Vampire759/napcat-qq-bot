@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/vampire2020/NapCatQQ-dokcer
-ExecStart=/usr/bin/python3 /home/vampire2020/NapCatQQ-dokcer/scripts/pycreen_present.py
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/pycreen_present.py
 Restart=always
 RestartSec=10
 

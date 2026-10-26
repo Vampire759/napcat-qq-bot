@@ -2,9 +2,12 @@
 
 基于 [NapCat](https://github.com/NapNeko/NapCatQQ)（QQ 协议端，Docker 部署）+ Python 标准库实现的 QQ 群机器人全家桶：
 
-- **@指令监听**（`listener.py`）：抽签/求签/一言/打卡/权限管理等，三级权限（超管/管理员/普通人白名单）+ 防刷屏冷却
+- **@指令监听**（`listener.py`）：抽签/求签/一言/打卡/权限管理等，三级权限（超管/管理员/普通人白名单）+ 防刷屏冷却；未识别内容交给本地 AI 兜底，并支持「读空气」按概率主动接话
+- **本地 AI 聊天**（`listener.py` + `fnchat_ai.py`）：接入 llama.cpp / Ollama / vLLM 等 OpenAI 兼容端点，显卡自动识别、模型与人格可切换（详见 [AI手册](docs/AI手册.md)）
+- **微信 fnchat 接入**（`fnchat_ai.py`）：本机装了 fnchat 即自动接入微信会话，与 QQ 共用同一套模型与人格
+- **登录二维码转发**（`qr_forward.py`）：QQ / 抖音登录二维码一刷新就发到微信，发不出去就保存在 `images/`
 - **零点抢第一打卡**（`group_sign.py`）：NTP 校时 + 毫秒级忙等 + 上行延迟补偿，最大化抢群签到第一
-- **抖音续火花**（`douyin_spark.py`）：无头 Chromium 每天 00:00:01 给抖音好友自动发消息续火花，QQ 群 @机器人 管理名单
+- **抖音续火花**（`douyin_spark.py`）：无头 Chromium 每天 00:00:01 给抖音好友自动发消息续火花，**自动发现带火花标识的会话，无需手动添加**，QQ 群 @机器人 可管理名单
 - **抖音扫码+刷脸登录**（`douyin_qrlogin.py`）：登录态持久化，重启免重新登录（避开短信验证）
 - **火花状态查询**（`spark_status.py`）：@机器人 查看火花天数/上次续火时间
 - **每日一图**（`daily_image.py`）：@机器人 返图 + 本机 HTTP API
@@ -80,9 +83,11 @@ cd napcat-qq-bot
 bash install.sh
 ```
 
-脚本会交互式完成：装依赖 → 填 QQ 号/token → 生成配置 → 装 systemd 服务 → 可选装 NapCat 容器 → 启动 → 开机自启。
+脚本会交互式完成：装依赖 → 填 QQ 号/token → 生成配置 → 装 systemd 服务 → **检测显卡/本地模型、检测本机 fnchat 并自动接入微信** → 可选装 NapCat 容器 → 启动 → 开机自启。
 
 > 需要 `docker`（跑 NapCat 本体）和 `python3 + pip3`。抖音功能需要网络能访问 douyin.com。
+>
+> AI 人格改 `conf/personality.md`、模型改 `conf/ai_config.json`，细节见 **[docs/AI手册.md](docs/AI手册.md)**。
 
 ## 手动搭建（不跑 install.sh 时）
 
@@ -107,15 +112,15 @@ python3 -m playwright install chromium        # 仅抖音功能需要
 
 ### 3. 改配置
 
-- 各脚本顶部都有「配置区」：`BOT_QQ`（机器人QQ）、`SUPER_ADMIN`（你的QQ）、`WS_TOKEN/HTTP_TOKEN`（与 NapCat 一致）、群号等
+- `conf/bot.json`：机器人 QQ / 超管 QQ（`install.sh` 生成，不入库；缺失时用占位值）
+- 其余参数在各脚本顶部「配置区」：`WS_TOKEN/HTTP_TOKEN`（与 NapCat 一致）、群号、关键词等
 - `conf/` 下运行时配置由 `*.example.json` 首次复制生成，或脚本自动生成
 
 ### 4. systemd 服务（用户级，勿用 root）
 
 ```bash
 mkdir -p ~/.config/systemd/user
-sed "s|/opt/napcat-qq-bot|$PWD|g" systemd/napcat-*.service > /dev/null  # 模板路径占位
-for u in systemd/napcat-*.service; do
+for u in systemd/*.service; do
     sed "s|/opt/napcat-qq-bot|$PWD|g" "$u" > ~/.config/systemd/user/$(basename "$u")
 done
 systemctl --user daemon-reload
@@ -137,7 +142,8 @@ systemctl --user enable --now napcat-douyin-spark.service
 ```
 ├── install.sh          一键搭建脚本
 ├── scripts/            全部脚本(每个文件头部即配置区, 带中文注释)
-├── conf/               运行时配置(*.example.json 为模板, 真实配置自动生成且不入库)
+├── conf/               运行时配置(*.example.json / *.example.md 为模板, 真实配置自动生成且不入库)
+├── docs/AI手册.md      AI/微信/二维码/续火花自动查找 手册
 ├── logs/  images/      运行时日志与二维码/截图(自动生成)
 ├── systemd/            用户级服务定义(ExecStart 路径为 /opt/napcat-qq-bot 占位, 安装时自动改写)
 └── README.md
@@ -167,9 +173,12 @@ python3 scripts/group_sign.py --test                 # 打卡真实测试(10秒�
 | 添加权限 QQ / 删除权限 QQ | 管理员 | 管理员增删 |
 | 添加打卡群 群号 / 测试打卡 / 重启打卡 | 管理员 | 打卡管理 |
 | 添加续火花 抖音号 / 删除续火花 / 续火花名单 / 立即续火花 | 管理员 | 抖音名单管理 |
+| 自动查找火花 | 管理员 | 扫会话列表，有火花标识的自动纳入（不用手动添加） |
 | 刷新火花 | 管理员 | 一键刷新全部火花天数（只扫会话列表，不发消息） |
 | 查看火花 | 管理员 | 火花天数与状态 |
 | 开启/关闭所有人、单群开关、清理日志 | 超管/管理员 | 全局控制 |
+
+> QQ 群 AI：`@机器人 任意内容` 没匹配到指令时由 AI 回答；**单独发 `@机器人 ai` 不回复**；群里没 @ 机器人时按 `read_air_prob`（默认 40%）概率主动接话。
 
 ## ⚠️ 免责声明
 

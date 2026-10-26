@@ -80,8 +80,14 @@ DEBUG_PNG     = os.path.join(IMAGE_DIR, "douyin_chat_debug.png")
 # ---- NapCat 连接(与 listener.py 保持一致) ----
 WS_HOST, WS_PORT, WS_TOKEN = "127.0.0.1", 3001, "napcat"
 HTTP_BASE, HTTP_TOKEN      = "http://127.0.0.1:3000", "napcat"
-BOT_QQ      = 1000000001          # 机器人自身 QQ(判断是否被@)
-SUPER_ADMIN = 1000000002          # 超管 QQ
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ      = int(_bot_conf.get("bot_qq") or 1000000001)          # 机器人自身 QQ(判断是否被@)
+SUPER_ADMIN = int(_bot_conf.get("super_admin") or 1000000002)      # 超管 QQ
 ALLOW_GROUPS = []                 # 响应哪些群; 空=所有群
 REPORT_GROUPS = []                # 零点发送完成后, 把汇总发到这些群; 空=只写日志
 
@@ -92,6 +98,11 @@ KW_LIST = ["续火花名单", "续火花列表", "火花名单"]
 KW_NOW  = ["立即续火花", "马上续火花", "手动续火花"]
 KW_HELP = ["续火花帮助", "火花帮助"]
 KW_REFRESH = ["刷新火花", "火花天数刷新"]   # 一键刷新全部火花天数(扫会话列表)
+KW_DISCOVER = ["自动查找火花", "查找火花", "自动发现火花", "火花自动查找"]
+
+# ---- 自动查找(有火花标识的会话自动加入名单, 无需手动添加) ----
+AUTO_DISCOVER = True                       # 每日发送前自动扫描会话列表, 有火花的自动续
+AUTO_DISCOVER_MAX = 80                     # 一次最多扫描/纳入的会话数(防列表过长)
 
 # ---- 续火花行为 ----
 FIRE_HH, FIRE_MM, FIRE_SS = 0, 0, 1      # 每天发送时刻: 00:00:01
@@ -208,6 +219,49 @@ def save_list(targets):
     finally:
         fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
         fp.close()
+
+
+def target_key(t):
+    """名单条目的唯一键: 有抖音号用抖音号; 只有昵称(自动发现的)用 nick:昵称。"""
+    dy = str(t.get("douyin_id") or "").strip()
+    if dy:
+        return dy
+    return "nick:" + str(t.get("nickname") or "").strip()
+
+
+def merge_discovered(day_map):
+    """把会话列表里「带火花标识」的会话自动加入 spark_list(无需手动添加)。
+    day_map = {会话昵称: 火花天数} (由 read_all_spark_days 扫列表得到)。
+    返回本次新增的 [(昵称, 天数), ...]。"""
+    if not day_map:
+        return []
+    targets = load_list()
+    known = {target_key(t) for t in targets}
+    known_nicks = {str(t.get("nickname") or "").strip() for t in targets}
+    added = []
+    for title, days in list(day_map.items())[:AUTO_DISCOVER_MAX]:
+        title = str(title or "").strip()
+        if not title or title in known_nicks:
+            continue
+        targets.append({"douyin_id": "", "nickname": title, "remark": "自动发现",
+                        "added_by": "auto", "added_at": _now_str()})
+        known.add("nick:" + title)
+        known_nicks.add(title)
+        added.append((title, days))
+    if added:
+        save_list(targets)
+
+    # 写入 friends 记录(标记 matched, 让状态查询与发送逻辑一致)
+    data = load_friends()
+    fr = data.setdefault("friends", {})
+    for title, days in day_map.items():
+        key = "nick:" + str(title or "").strip()
+        rec = fr.setdefault(key, {})
+        rec.update({"matched": True, "nickname": title,
+                    "match_method": "auto_discover", "spark_days": days})
+        rec.setdefault("douyin_id", "")
+    save_friends(data)
+    return added
 
 
 def load_friends():
@@ -1033,10 +1087,29 @@ def refresh_all_days(sess=None):
         return _scan_and_update_days(s)
 
 
+def job_discover():
+    """自动查找: 扫一遍会话列表, 把带火花标识的会话自动加入名单。
+    无需手动「添加续火花 抖音号」; 返回汇总文本。"""
+    with DouyinSession() as s:
+        s.require_login()
+        s.open_chat()
+        s.page.wait_for_timeout(2500)
+        day_map = s.read_all_spark_days()
+        added = merge_discovered(day_map)
+    if not day_map:
+        return "🔎 自动查找完成: 会话列表里没读到火花标识(可跑 --selftest 排查)"
+    lines = [f"🔎 自动查找完成: 发现 {len(day_map)} 个火花会话, 新纳入 {len(added)} 个",
+             " • " + "、".join(f"{n}({d}天)" for n, d in list(day_map.items())[:20])]
+    if len(day_map) > 20:
+        lines.append(f" …共 {len(day_map)} 个")
+    lines.append("带火花的会话每天零点会自动续, 无需手动添加")
+    return "\n".join(lines)
+
+
 def job_run_daily(fire_epoch=None, report_groups=()):
     """跑一轮续火花。fire_epoch 给定时, 会先开浏览器待命, 到点(00:00:01)再发。"""
     targets = load_list()
-    if not targets:
+    if not targets and not AUTO_DISCOVER:
         log.info("名单为空, 本轮跳过")
         return "名单为空"
     targets = targets[:DAILY_LIMIT]
@@ -1046,6 +1119,20 @@ def job_run_daily(fire_epoch=None, report_groups=()):
         my_id, my_nick = s.get_self_info()
         log.info(f"登录账号: 抖音号={my_id} 昵称={my_nick}")
         s.open_chat()
+        # 自动查找: 会话列表里带火花标识的, 自动纳入本轮名单(无需手动添加)
+        if AUTO_DISCOVER:
+            try:
+                day_map = s.read_all_spark_days()
+                added = merge_discovered(day_map)
+                if added:
+                    log.info(f"[自动查找] 新纳入 {len(added)} 个火花会话: "
+                             + "、".join(f"{n}({d}天)" for n, d in added))
+                    targets = load_list()[:DAILY_LIMIT]
+            except Exception as e:
+                log.info(f"[自动查找] 失败(不影响已有名单): {e}")
+        if not targets:
+            log.info("名单为空, 会话列表里也没发现火花标识")
+            return "名单为空(会话列表未发现火花标识)"
         # 开页后先一次性刷新全部火花天数(只扫会话列表, 不点开聊天窗, 不耗时)
         try:
             log.info(_scan_and_update_days(s).splitlines()[0])
@@ -1065,12 +1152,14 @@ def job_run_daily(fire_epoch=None, report_groups=()):
         save_friends(friends)
 
         for idx, t in enumerate(targets):
-            dy_id = t["douyin_id"]
+            dy_id = str(t.get("douyin_id") or "")
+            key = target_key(t)
+            label = dy_id or str(t.get("nickname") or key)
             if idx > 0:
                 gap = random.randint(*FRIEND_GAP)
                 log.info(f"等待 {gap}s 再处理下一位...")
                 time.sleep(gap)
-            rec = friends.get("friends", {}).get(dy_id, {})
+            rec = friends.get("friends", {}).get(key, {})
             try:
                 opened = False
                 # 优先按昵称走会话列表匹配(稳定可靠, 网页搜索常搜不到)
@@ -1079,12 +1168,13 @@ def job_run_daily(fire_epoch=None, report_groups=()):
                     opened = s.find_in_session_list(nick_target)
                     if opened:
                         # 会话列表匹配成功: 标记 matched=True (无需 unique_id)
-                        upsert_friend(dy_id, {
+                        upsert_friend(key, {
                             "matched": True, "matched_at": _now_str(),
                             "nickname": nick_target,
+                            "douyin_id": dy_id,
                             "match_method": "session_list",
                             "last_error": None})
-                        rec = load_friends().get("friends", {}).get(dy_id, {})
+                        rec = load_friends().get("friends", {}).get(key, {})
                 # 未匹配过的(昵称兜底也没打开)再走 IM 搜索: 按昵称搜+抖音号比对
                 # (实测搜索框不支持抖音号, 直接搜抖音号基本无效, 仅最后兜底)
                 if not opened and not rec.get("matched"):
@@ -1106,23 +1196,25 @@ def job_run_daily(fire_epoch=None, report_groups=()):
                         if nick_target:
                             opened = s.find_in_session_list(nick_target)
                             if opened:
-                                upsert_friend(dy_id, {
+                                upsert_friend(key, {
                                     "matched": True, "matched_at": _now_str(),
                                     "nickname": nick_target,
+                                    "douyin_id": dy_id,
                                     "match_method": "session_list_fallback",
                                     "last_error": None})
-                                rec = load_friends().get("friends", {}).get(dy_id, {})
+                                rec = load_friends().get("friends", {}).get(key, {})
                         if not opened:
-                            upsert_friend(dy_id, {"matched": False,
-                                                 "last_error": f"候选{n_cand}个不匹配, 会话列表也未找到"})
-                            results.append((dy_id, False, "未匹配"))
+                            upsert_friend(key, {"matched": False,
+                                               "last_error": f"候选{n_cand}个不匹配, 会话列表也未找到"})
+                            results.append((label, False, "未匹配"))
                             continue
                     else:
                         # user 匹配成功: 点开会话并记录资料
                         opened = s.click_friend(user)
-                        upsert_friend(dy_id, {
+                        upsert_friend(key, {
                             "matched": True, "matched_at": _now_str(),
                             "nickname": user.get("nickname"),
+                            "douyin_id": dy_id,
                             "uid": str(user.get("uid") or ""),
                             "sec_uid": str(user.get("sec_uid") or ""),
                             "unique_id": str(user.get("unique_id") or ""),
@@ -1155,31 +1247,31 @@ def job_run_daily(fire_epoch=None, report_groups=()):
 
                 # ⚠️ 只有确认打开了「目标好友」的会话才发送, 避免消息发错对象
                 if not opened:
-                    upsert_friend(dy_id,
+                    upsert_friend(key,
                                   {"last_error": "未打开目标会话, 本轮跳过(未发送)"})
-                    results.append((dy_id, False, "未打开会话, 已跳过"))
-                    log.info(f"[{idx+1}/{len(targets)}] {dy_id} ❌ 未打开会话, 跳过不发送")
+                    results.append((label, False, "未打开会话, 已跳过"))
+                    log.info(f"[{idx+1}/{len(targets)}] {label} ❌ 未打开会话, 跳过不发送")
                     continue
 
                 msg = random.choice(SPARK_MESSAGES)
                 ok, why = s.send_message(msg)
                 days = s.read_spark_days(
                     rec.get("nickname") or nick_target or t.get("nickname"))
-                upsert_friend(dy_id, {
+                upsert_friend(key, {
                     "last_send": _now_str(),
                     "last_message": msg,
                     "last_status": "ok" if ok else f"fail: {why}",
                     "spark_days": days,
                     "last_error": None if ok else why,
                 })
-                results.append((dy_id, ok, why))
-                log.info(f"[{idx+1}/{len(targets)}] {dy_id} "
+                results.append((label, ok, why))
+                log.info(f"[{idx+1}/{len(targets)}] {label} "
                          f"{'✅' if ok else '❌'} {why} 火花天数={days}")
             except Exception as e:
-                upsert_friend(dy_id, {"last_send": _now_str(),
-                                     "last_status": f"fail: {e}"})
-                results.append((dy_id, False, str(e)))
-                log.info(f"[{idx+1}/{len(targets)}] {dy_id} 异常: {e}")
+                upsert_friend(key, {"last_send": _now_str(),
+                                   "last_status": f"fail: {e}"})
+                results.append((label, False, str(e)))
+                log.info(f"[{idx+1}/{len(targets)}] {label} 异常: {e}")
 
     ok_n = sum(1 for _, ok, _ in results if ok)
     summary = f"🔥 续火花完成 {ok_n}/{len(results)}\n" + "\n".join(
@@ -1242,14 +1334,16 @@ def format_list():
         return "📋 续火花名单为空\n用法: @我 添加续火花 抖音号"
     store = load_friends()
     fr = store.get("friends", {})
-    matched = sum(1 for t in targets if fr.get(t["douyin_id"], {}).get("matched"))
+    matched = sum(1 for t in targets if fr.get(target_key(t), {}).get("matched"))
     lines = [f"📋 续火花 {matched}/{len(targets)}"]
     for t in targets:
-        info = fr.get(t["douyin_id"], {})
+        info = fr.get(target_key(t), {})
         nick = (info.get("nickname") or t.get("nickname")
                 or t["douyin_id"] or "?")
         if info.get("matched"):
             seg = f"🟢 {nick}"
+            if t.get("added_by") == "auto":
+                seg += "(自动)"
             days = info.get("spark_days")
             if days is not None:
                 seg += f" {days}天"
@@ -1272,12 +1366,16 @@ def handle_command(text, qq, group_id):
         return format_list()
     if any(k in text for k in KW_HELP):
         return ("🔥 续火花用法(仅管理员)\n"
-                "添加续火花 抖音号 —— 加入名单并自动匹配\n"
+                "自动查找火花 —— 扫会话列表, 有火花的自动纳入(不用手动加)\n"
+                "添加续火花 抖音号 —— 手动加入名单并自动匹配\n"
                 "删除续火花 抖音号 —— 移出名单\n"
                 "续火花名单 —— 查看匹配/发送状态\n"
                 "立即续火花 —— 立刻跑一轮\n"
                 "刷新火花 —— 只刷新火花天数(不发消息)\n"
-                "每日 00:00:01 自动发送")
+                "每日 00:00:01 自动发送(含自动发现)")
+    if any(k in text for k in KW_DISCOVER):
+        _JOB_QUEUE.enqueue({"kind": "discover", "qq": qq, "group": group_id})
+        return "🔎 已开始自动查找火花会话, 完成后在本群汇报"
     if any(k in text for k in KW_REFRESH):
         _JOB_QUEUE.enqueue({"kind": "days", "qq": qq, "group": group_id})
         return "🔄 已开始刷新火花天数(只扫列表不发消息), 完成后汇报"
@@ -1365,6 +1463,8 @@ def worker_loop():
                     msg = job_run_daily(report_groups=groups)
                 elif job["kind"] == "days":
                     msg = refresh_all_days()
+                elif job["kind"] == "discover":
+                    msg = job_discover()
                 else:
                     continue
             send_group(job["group"], f"[CQ:at,qq={job['qq']}] {msg}")
@@ -1457,6 +1557,8 @@ def main():
     parser.add_argument("--fire", action="store_true", help="立刻跑一轮发送")
     parser.add_argument("--days", action="store_true",
                         help="只刷新所有好友的火花天数(扫一次会话列表, 不发消息)")
+    parser.add_argument("--discover", action="store_true",
+                        help="自动查找会话列表里带火花标识的人(自动加入名单)")
     parser.add_argument("--selftest", action="store_true", help="导出消息页调试信息")
     args = parser.parse_args()
 
@@ -1486,6 +1588,10 @@ def main():
 
     if args.days:
         log.info(refresh_all_days())
+        return
+
+    if args.discover:
+        log.info(job_discover())
         return
 
     if args.selftest:

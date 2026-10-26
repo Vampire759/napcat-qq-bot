@@ -60,8 +60,14 @@ LOG_FILE     = os.path.join(LOG_DIR, "spark_status.log")
 
 WS_HOST, WS_PORT, WS_TOKEN = "127.0.0.1", 3001, "napcat"
 HTTP_BASE, HTTP_TOKEN      = "http://127.0.0.1:3000", "napcat"
-BOT_QQ      = 1000000001
-SUPER_ADMIN = 1000000002
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ      = int(_bot_conf.get("bot_qq") or 1000000001)
+SUPER_ADMIN = int(_bot_conf.get("super_admin") or 1000000002)
 ALLOW_GROUPS = []                 # 空=所有群
 
 # @触发关键词(可改)
@@ -117,6 +123,12 @@ def _short_time(s):
         return str(s)[:10]
 
 
+def target_key(t):
+    """名单条目键: 有抖音号用抖音号, 只有昵称(自动发现)用 nick:昵称。"""
+    dy = str(t.get("douyin_id") or "").strip()
+    return dy or ("nick:" + str(t.get("nickname") or "").strip())
+
+
 def build_status():
     """汇总名单 + 匹配资料, 返回精简回复: 每个好友一行, 一屏能看全。"""
     targets = _load_json(LIST_FILE, {}).get("targets", [])
@@ -125,7 +137,7 @@ def build_status():
 
     total = len(targets)
     matched = sum(1 for t in targets
-                  if friends.get(str(t.get("douyin_id")), {}).get("matched"))
+                  if friends.get(target_key(t), {}).get("matched"))
     # 头部: 匹配数 + 登录账号(没拿到就只看登录态文件)
     who = store.get("my_nickname") or store.get("my_douyin_id")
     if who:
@@ -139,12 +151,14 @@ def build_status():
     if not targets:
         lines.append("名单为空, @我 添加续火花 抖音号")
     for t in targets:
-        dy = str(t.get("douyin_id"))
-        info = friends.get(dy, {})
-        nick = info.get("nickname") or t.get("nickname") or dy
+        dy = str(t.get("douyin_id") or "")
+        info = friends.get(target_key(t), {})
+        nick = info.get("nickname") or t.get("nickname") or dy or "?"
         if info.get("matched"):
             # 已匹配: 🟢 昵称 天数 上次续火时间+结果, 一行完事
             seg = f"🟢 {nick}"
+            if t.get("added_by") == "auto":
+                seg += "(自动)"
             days = info.get("spark_days")
             if days is not None:
                 seg += f" {days}天"

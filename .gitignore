@@ -2,10 +2,16 @@
 logs/*.log
 logs/*.out
 *.out
+*.log
 
-# ===== conf/ 运行时配置与登录态(严禁提交, 仓库只保留 *.example.json) =====
+# ===== 进程锁 =====
+scripts/*.lock
+scripts/.*.lock
+
+# ===== conf/ 运行时配置与登录态(严禁提交, 仓库只保留 *.example.json / *.example.md) =====
 conf/*
 !conf/*.example.json
+!conf/*.example.md
 
 # ===== 运行时目录 =====
 napcat/

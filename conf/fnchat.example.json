@@ -1,0 +1,7 @@
+{
+  "base_url": "http://127.0.0.1:8033",
+  "username": "admin",
+  "password": "",
+  "channel": "official",
+  "poll_seconds": 3
+}

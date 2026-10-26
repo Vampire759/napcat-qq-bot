@@ -43,7 +43,13 @@ LOG_DIR  = os.path.join(ROOT_DIR, "logs")                # 日志目录
 # ============ 配置区 (按需修改) ============
 NAPCAT_HTTP   = "http://127.0.0.1:3000"   # NapCat HTTP API 地址
 NAPCAT_TOKEN  = "napcat"                    # HTTP API token
-BOT_QQ        = 1000000001                  # 打卡用的账号
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ        = int(_bot_conf.get("bot_qq") or 1000000001)   # 打卡用的账号
 # 打卡群列表: 持久化在 conf/sign_groups.json, listener 的「添加打卡群」指令会写入它。
 # 下面是"种子默认值": 首次运行(无文件)时用它并写入文件; 之后以文件为准, 零点每轮重新读取。
 SEED_GROUP_IDS = [111111111, 222222222, 333333333]   # 目标群号(可多个, 都会在零点打卡)

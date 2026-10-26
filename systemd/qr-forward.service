@@ -1,0 +1,14 @@
+[Unit]
+Description=登录二维码自动转发(QQ/抖音 → 微信, 发不出则保存到 images/)
+After=network.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/qr_forward.py
+Restart=always
+RestartSec=10
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

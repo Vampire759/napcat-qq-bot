@@ -1,0 +1,15 @@
+[Unit]
+Description=本地大模型推理服务 (llama.cpp, 自动识别显卡/CPU)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+Environment=LD_LIBRARY_PATH=%h/llamacpp/bin
+ExecStart=/bin/bash /opt/napcat-qq-bot/scripts/start_ai.sh
+Restart=always
+RestartSec=5
+MemoryMax=12G
+
+[Install]
+WantedBy=default.target

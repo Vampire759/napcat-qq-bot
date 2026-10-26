@@ -49,13 +49,20 @@ except Exception:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))    # scripts/ 目录
 ROOT_DIR = os.path.dirname(BASE_DIR)                     # 项目根 NapCatQQ-dokcer/
 LOG_DIR  = os.path.join(ROOT_DIR, "logs")
+CONF_DIR = os.path.join(ROOT_DIR, "conf")
 LOCK_FILE = os.path.join(BASE_DIR, ".daily_image.lock")  # 进程锁(放 scripts/ 即可)
 LOG_FILE  = os.path.join(LOG_DIR, "daily_image.log")
 
 # ---- NapCat ----
 WS_HOST, WS_PORT, WS_TOKEN = "127.0.0.1", 3001, "napcat"
 HTTP_BASE, HTTP_TOKEN      = "http://127.0.0.1:3000", "napcat"
-BOT_QQ      = 1000000001
+# 机器人身份: 优先读 conf/bot.json(不入库, install.sh 生成); 缺失时用占位值
+try:
+    with open(os.path.join(CONF_DIR, "bot.json"), "r", encoding="utf-8") as _f:
+        _bot_conf = json.load(_f) or {}
+except Exception:
+    _bot_conf = {}
+BOT_QQ      = int(_bot_conf.get("bot_qq") or 1000000001)
 ALLOW_GROUPS = []                # 空=所有群都能用
 
 # ---- @触发词(想换说法改这里) ----

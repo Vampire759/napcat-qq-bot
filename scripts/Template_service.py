@@ -66,8 +66,8 @@ for _d in (CONF_DIR, LOG_DIR, IMAGE_DIR):
 # NapCat 连接(全项目一致) —— 部署时改成真实值
 WS_HOST, WS_PORT, WS_TOKEN = "127.0.0.1", 3001, "napcat"
 HTTP_BASE, HTTP_TOKEN      = "http://127.0.0.1:3000", "napcat"
-BOT_QQ      = 1000000001        # ← 部署时改成真实机器人 QQ
-SUPER_ADMIN = 1000000002        # ← 部署时改成超管 QQ
+BOT_QQ      = 1000000001        # ← 由 conf/bot.json 覆盖(install.sh 写入)
+SUPER_ADMIN = 1000000002        # ← 由 conf/bot.json 覆盖(install.sh 写入)
 ALLOW_GROUPS = []                # 空=所有群
 
 # 文件路径(部署时把 your_service 改成你的服务名)
