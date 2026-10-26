@@ -50,6 +50,8 @@ import queue
 import threading
 
 import web_tool  # 同目录: 给 AI 用的联网搜索/网页抓取(conf/ai_config.json 里可关)
+import ai_agent  # 同目录: Agent 多步工具调用(默认关)
+import ai_rules  # 同目录: 规则限制(默认关)
 
 # ============ 内存限制 ============
 MEM_LIMIT_MB = 96
@@ -144,6 +146,11 @@ AI_DEFAULTS = {
     "web_timeout": 8,                      # 单次联网请求超时(秒)
     "web_max_context": 1200,               # 注入给模型的检索文本上限(字符)
     "web_cache_ttl": 600,                  # 同一问题的检索缓存(秒)
+    "agent_enabled": False,                # Agent 模式(可多步调用工具), 默认关
+    "agent_max_steps": 3,                  # Agent 最多调用工具步数
+    "rules_enabled": False,                # 规则限制, 默认关
+    "rules_file": "conf/ai_rules.md",      # 规则 md(热加载)
+    "rules_block_keywords": [],            # 违禁词, 命中直接不回复
     "fallback_prompt": (
         "你是QQ群里的AI助手“今日小助手”。"
         "请用简体中文、口语化、简洁地回答，通常不超过200字。"
@@ -456,13 +463,25 @@ def _ai_worker():
 def _ai_handle(group_id, user_id, user_name, text, mode="at"):
     key = str(group_id)
     history = list(_ai_history.get(key, []))
+    hit = ai_rules.blocked(text, AI_CFG)
+    if hit:
+        log.info(f"[AI] 群{group_id} 命中规则违禁词({hit}), 不回复")
+        return
     system_prompt = ai_personality()
+    rules = ai_rules.rules_text(AI_CFG)
+    if rules:
+        system_prompt += ("\n\n【必须遵守的规则（来自 conf/ai_rules.md，优先于其他人格设定）】\n"
+                          + rules)
     if mode == "air":
         system_prompt += AIR_EXTRA_PROMPT
+    # Agent 只对 @ 提问生效: 读空气保持单次回答, 避免刷屏和误触发
+    agent_on = ai_agent.wants_agent(AI_CFG) and mode == "at"
+    if agent_on:
+        system_prompt = ai_agent.build_prompt(system_prompt, AI_CFG)
     messages = [{"role": "system", "content": system_prompt}]
     messages += history
     user_content = f"{user_name}(QQ {user_id})：{text}"
-    web_ctx = web_tool.web_context(text, AI_CFG)
+    web_ctx = "" if agent_on else web_tool.web_context(text, AI_CFG)
     if web_ctx:
         log.info(f"[AI] 群{group_id} 联网检索完成({len(web_ctx)}字)")
         user_content += ("\n\n【联网检索结果（仅供参考，可能过时或不完整）】\n"
@@ -470,23 +489,31 @@ def _ai_handle(group_id, user_id, user_name, text, mode="at"):
                          + "\n\n回答时优先依据以上检索结果；若与问题无关则忽略，"
                            "并如实说明没有查到。")
     messages.append({"role": "user", "content": user_content})
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "stream": False,
-        "temperature": AI_TEMPERATURE,
-        "max_tokens": AI_NUM_PREDICT,
-    }
-    req = urllib.request.Request(
-        AI_API_URL.rstrip("/") + "/v1/chat/completions",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as r:
-        data = json.loads(r.read().decode())
-    choices = data.get("choices") or [{}]
-    answer = (choices[0].get("message") or {}).get("content", "").strip()
+
+    def _chat(msgs):
+        payload = {
+            "model": AI_MODEL,
+            "messages": msgs,
+            "stream": False,
+            "temperature": AI_TEMPERATURE,
+            "max_tokens": AI_NUM_PREDICT,
+        }
+        req = urllib.request.Request(
+            AI_API_URL.rstrip("/") + "/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as r:
+            data = json.loads(r.read().decode())
+        choices = data.get("choices") or [{}]
+        return (choices[0].get("message") or {}).get("content", "").strip()
+
+    if agent_on:
+        answer = ai_agent.run(_chat, messages, AI_CFG,
+                              log=lambda m: log.info(f"[AI] 群{group_id} {m}"))
+    else:
+        answer = _chat(messages)
     if not answer:
         log.info(f"[AI] 群{group_id} 返回空内容")
         return
