@@ -8,7 +8,7 @@
 | QQ 群 AI 聊天 + 读空气 | `scripts/listener.py` | `napcat-listener.service` |
 | 微信（飞牛 fnchat）AI 聊天 | `scripts/fnchat_ai.py` | `fnchat-ai.service` |
 | 登录二维码自动发微信 | `scripts/qr_forward.py` | `qr-forward.service` |
-| 网页管理面板（服务/脚本/AI 配置/日志） | `scripts/web_panel.py` | `napcat-web-panel.service` |
+| 网页管理面板（跑在 napcat 容器内, 8099） | `scripts/web_panel.py` | `napcat-panel-bridge` + `napcat-panel-exec` |
 
 > AI 调用逻辑在 `scripts/ai_client.py`：**配置了外部 API 就先走外部 API，失败/超时/未配置自动回退本地 llama.cpp**，QQ 与微信共用。
 
@@ -534,22 +534,33 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8033/api/health   # 40
 
 ## 10. 网页管理面板（`scripts/web_panel.py`）
 
-一个纯标准库的网页后台，浏览器打开 `http://服务器IP:8090` 即可，手机上也能用。
+一个纯标准库的网页后台，**跑在 napcat 容器里、映射宿主机 8099**，手机也能用。架构：
+
+```
+浏览器 → 宿主机:8099 → napcat 容器内 web_panel.py(文件都在, 挂载了整个项目目录)
+                              │  容器里没有 systemd, 涉及宿主机服务的操作
+                              ▼
+                 run/panel_bridge.sock → 宿主机 scripts/panel_bridge.py(systemd/journalctl/AI 测试)
+```
+
+- 容器内面板：由宿主机监督服务 `napcat-panel-exec` 保活（容器重启后面板自动拉起）；
+- 宿主机桥接：`napcat-panel-bridge` 负责服务启停/日志/AI 测试；
+- 项目目录挂在容器内 **`/srv/napcat-dokcer`**（不能挂 `/app` 下：napcat 镜像启动会 `chown -R /app`，把整个项目改成 root 属主）。
 
 ### 10.1 启动与登录
 
 ```bash
-systemctl --user enable --now napcat-web-panel     # 安装/开机自启(install.sh 已自动做)
-systemctl --user status napcat-web-panel --no-pager
+systemctl --user enable --now napcat-panel-bridge napcat-panel-exec   # 桥接 + 监督
+systemctl --user status napcat-panel-bridge napcat-panel-exec --no-pager
+docker ps --filter name=napcat   # 应看到 0.0.0.0:8099->8099/tcp
 
 # 访问令牌(首次启动自动生成并写入 conf/web_panel.json)
 grep '"token"' conf/web_panel.json
-journalctl --user -u napcat-web-panel -n 20 | grep 令牌
 ```
 
-- 浏览器首次访问输入令牌即可；也可用一次性链接 `http://服务器IP:8090/?token=令牌` 直接进入。
+- 访问：`http://服务器IP:8099`，或用一次性链接 `http://服务器IP:8099/?token=令牌`。
 - 令牌保存在 Cookie（30 天），换浏览器/清 Cookie 需要重新输入。
-- 忘记/想换令牌：`python3 scripts/web_panel.py --reset-token` 后重启服务。
+- 忘记/想换令牌：`python3 scripts/web_panel.py --reset-token` 后重启 `napcat-panel-exec`。
 
 配置 `conf/web_panel.json`（不入库，`install.sh` 自动生成）：
 
@@ -557,23 +568,31 @@ journalctl --user -u napcat-web-panel -n 20 | grep 令牌
 { "host": "0.0.0.0", "port": 8090, "token": "" }
 ```
 
-- `host` 改成 `127.0.0.1` 即只允许本机访问（要经 nginx 反代时用）；
-- `port` 冲突就换一个（如 8091），改完重启 `napcat-web-panel`；
-- `token` 留空则每次启动若仍为空会自动生成；手动填一段随机长字符串也可以。
+> 容器内运行时端口由 `panel_in_container.sh` 固定为 8099（容器映射也用它，改端口两处同步改）。
 
-### 10.2 能做什么
+### 10.2 不用容器时（宿主机直跑，方式二选一）
+
+```bash
+systemctl --user disable --now napcat-panel-exec    # 停掉容器内面板
+systemctl --user enable --now napcat-web-panel      # 宿主机面板, 默认 8090
+```
+
+面板在宿主机时 service/systemd 操作走本地 systemctl，无需桥接；`host` 改成 `127.0.0.1` 即只允许本机访问。
+
+### 10.3 能做什么
 
 | 页签 | 功能 |
 |------|------|
-| 服务 | 列出全部 systemd 用户服务的 `active/enabled`，一键启动 / 停止 / 重启，看 journalctl 日志；「重启 listener + fnchat-ai」一键让 AI 配置生效 |
+| 服务 | 列出全部 systemd 用户服务的 `active/enabled`，一键启动 / 停止 / 重启，看服务日志；「重启 listener + fnchat-ai」一键让 AI 配置生效 |
 | AI 配置 | 快捷设置外部 API（开关 / 地址 / Key / 模型 / 超时 / 回退 / 代理）；在线编辑完整 `ai_config.json`；在线编辑人格 `personality.md` 与规则 `ai_rules.md`（热加载）；「AI 测试」直接标出本次回答来自外部 API 还是本地模型 |
 | 脚本 | 列出 `scripts/` 下全部 `.py` / `.sh`，在线查看 / 编辑 / 保存（保存前自动备份到 `back/panel/`）/ 新建 / 删除 |
 | 日志 | 浏览 `logs/*.log` 并查看末尾 N 行 |
 
 > 保存脚本后仍需重启对应服务才会生效（服务页一键重启）。AI 配置只有 `personality.md` / `ai_rules.md` 是热加载，其余键要重启服务。
 
-### 10.3 安全提示
+### 10.4 安全提示
 
-- 面板默认监听 `0.0.0.0:8090`，靠令牌登录；**强烈建议**把令牌设长一点，或只在内网使用。
+- 面板监听 `0.0.0.0:8099`，靠令牌登录；**强烈建议**把令牌设长一点，或只在内网使用。
 - 不要把 `conf/web_panel.json` 提交到 Git（`.gitignore` 里 `conf/*` 已排除）。
 - 面板能改脚本 = 能执行任意代码，令牌等同于服务器权限，不要外传。
+- 桥接 socket（`run/panel_bridge.sock`）只接受本机用户/root 连接，文件权限 660。

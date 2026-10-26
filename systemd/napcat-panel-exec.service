@@ -1,0 +1,13 @@
+[Unit]
+Description=NapCat 容器内网页面板监督 (8099, scripts/panel_in_container.sh)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/napcat-qq-bot/scripts/panel_in_container.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

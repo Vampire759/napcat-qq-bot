@@ -93,22 +93,27 @@ bash install.sh
 
 ## 网页管理面板
 
-装好后浏览器打开 **`http://服务器IP:8090`**，输入访问令牌登录（令牌见 `conf/web_panel.json`，或 `journalctl --user -u napcat-web-panel -n 20`）：
+面板跑在 **napcat 容器里**，浏览器打开 **`http://服务器IP:8099`**，输入访问令牌登录（令牌见 `conf/web_panel.json`，或 `journalctl --user -u napcat-web-panel -n 20`）：
 
 | 页签 | 能做什么 |
 |------|----------|
-| 服务 | 全部 systemd 用户服务状态，一键启动/停止/重启，看 journalctl 日志 |
+| 服务 | 全部 systemd 用户服务状态，一键启动/停止/重启，看服务日志 |
 | AI 配置 | 外部 API 开关/地址/Key/模型、完整 `ai_config.json`、人格与规则在线编辑、AI 连通性测试（会显示本次用的是外部 API 还是本地模型） |
 | 脚本 | `scripts/` 下脚本在线查看/编辑/保存（自动备份到 `back/panel/`）、新建、删除 |
 | 日志 | 浏览 `logs/*.log` |
 
+架构：容器内跑 `web_panel.py`（挂载了整个项目目录），容器里没有 systemd，所以服务启停/日志/AI 测试通过宿主机上的桥接 `scripts/panel_bridge.py`（unix socket）代劳。两个配套服务：
+
 ```bash
-systemctl --user restart napcat-web-panel     # 改完面板配置重启
-grep '"token"' conf/web_panel.json            # 查看/设置访问令牌
-python3 scripts/web_panel.py --reset-token    # 换一个令牌
+systemctl --user status napcat-panel-bridge napcat-panel-exec --no-pager
+systemctl --user restart napcat-panel-exec          # 容器内面板崩了/改挂载后重启
+grep '"token"' conf/web_panel.json                  # 查看/设置访问令牌
+python3 scripts/web_panel.py --reset-token          # 换一个令牌
 ```
 
-> 面板能改脚本 = 能执行任意代码，令牌请当密码保管；只在内网用的话可把 `conf/web_panel.json` 的 `host` 改成 `127.0.0.1`。
+> 面板能改脚本 = 能执行任意代码，令牌请当密码保管。**不要**把项目目录挂到容器的 `/app` 下（napcat 镜像启动时会 `chown -R /app`，把整个项目改成 root 属主）；请像 install.sh 一样挂到 `/srv/napcat-dokcer`。
+>
+> 不用容器的话，也可宿主机直跑：`systemctl --user enable --now napcat-web-panel`（默认监听 8090）。两种方式二选一。
 
 
 ## 手动搭建（不跑 install.sh 时）

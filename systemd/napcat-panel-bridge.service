@@ -1,0 +1,14 @@
+[Unit]
+Description=NapCat 管理面板宿主机桥接 (scripts/panel_bridge.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/napcat-qq-bot
+ExecStart=/usr/bin/python3 /opt/napcat-qq-bot/scripts/panel_bridge.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

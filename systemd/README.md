@@ -1,6 +1,6 @@
 # systemd 用户级服务
 
-本目录 6 个 `.service` 是**备份源**，`ExecStart` 里的 `/opt/napcat-qq-bot` 是占位路径，
+本目录 8 个 `.service` 是**备份源**，`ExecStart` 里的 `/opt/napcat-qq-bot` 是占位路径，
 由 `install.sh` 安装时自动改写为实际目录后拷贝到 `~/.config/systemd/user/`。
 
 ## 服务清单
@@ -12,7 +12,9 @@
 | napcat-douyin-spark.service | scripts/douyin_spark.py | 抖音续火花(00:00:01) |
 | napcat-spark-status.service | scripts/spark_status.py | @查看火花 |
 | napcat-daily-image.service | scripts/daily_image.py | 每日一图 |
-| napcat-web-panel.service | scripts/web_panel.py | 网页管理面板(8090) |
+| napcat-web-panel.service | scripts/web_panel.py | 网页管理面板(宿主机直跑模式, 8090) |
+| napcat-panel-bridge.service | scripts/panel_bridge.py | 面板桥接(供容器内面板调用, unix socket) |
+| napcat-panel-exec.service | scripts/panel_in_container.sh | 监督容器内面板(8099) |
 
 ## 手动安装 / 恢复
 

@@ -245,10 +245,11 @@ NAPCAT_IMAGE_MIRROR="docker.m.daocloud.io/mlikiowa/napcat-docker:latest"
 NAPCAT_IMAGE_HUB="mlikiowa/napcat-docker:latest"
 
 run_napcat() {
-    docker run -d --name napcat --restart unless-stopped \
-      -p 3000:3000 -p 3001:3001 -p 6099:6099 \
+    docker run -d --name napcat --hostname napcat-qq --restart unless-stopped \
+      -p 3000:3000 -p 3001:3001 -p 6099:6099 -p 8099:8099 \
       -v "$PROJECT_DIR/napcat/config:/app/napcat/config" \
       -v "$PROJECT_DIR/napcat/data:/app/napcat/data" \
+      -v "$PROJECT_DIR:/srv/napcat-dokcer" \
       "$1"
 }
 
@@ -263,10 +264,11 @@ elif ! command -v docker >/dev/null 2>&1; then
     warn "docker 仍未安装, 跳过 NapCat 容器; 装好 docker 后手动执行第 5 步提示的命令"
 else
     warn "未检测到 napcat 容器(机器人本体)。将执行:"
-    echo "  docker run -d --name napcat --restart unless-stopped \\"
-    echo "    -p 3000:3000 -p 3001:3001 -p 6099:6099 \\"
+    echo "  docker run -d --name napcat --hostname napcat-qq --restart unless-stopped \\"
+    echo "    -p 3000:3000 -p 3001:3001 -p 6099:6099 -p 8099:8099 \\"
     echo "    -v $PROJECT_DIR/napcat/config:/app/napcat/config \\"
     echo "    -v $PROJECT_DIR/napcat/data:/app/napcat/data \\"
+    echo "    -v $PROJECT_DIR:/srv/napcat-dokcer \\"
     echo "    $NAPCAT_IMAGE_MIRROR   (失败自动换 Docker Hub 源)"
     echo "装好后打开 http://服务器IP:6099/webui 扫码登录机器人 QQ, 并把 WebUI 里"
     echo "OneBot 的 HTTP(3000)/WS(3001) token 设为上面填的 token。"

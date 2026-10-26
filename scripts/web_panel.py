@@ -31,6 +31,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +49,13 @@ PANEL_CONF = os.path.join(CONF_DIR, "web_panel.json")
 AI_CONFIG = os.path.join(CONF_DIR, "ai_config.json")
 AI_EXAMPLE = os.path.join(CONF_DIR, "ai_config.example.json")
 UNIT_DIR = os.path.join(ROOT_DIR, "systemd")
+
+# 面板跑在 napcat 容器内时(挂载项目目录), 服务工作/日志/AI 测试
+# 全部经宿主机上的 scripts/panel_bridge.py(unix socket)完成。
+# 注意: napcat 镜像会删除 /.dockerenv(QQ 客户端检测容器环境), 不能靠它判断;
+# 容器内没有 systemd 运行时目录, 用它区分宿主/容器最可靠。
+IN_CONTAINER = not os.path.isdir("/run/systemd/system")
+BRIDGE_SOCK = os.path.join(ROOT_DIR, "run", "panel_bridge.sock")
 
 MAX_BODY = 2 * 1024 * 1024          # 单次请求体上限 2MB
 EDITABLE_TEXT = {                   # 允许在线编辑的 conf 文本文件
@@ -140,6 +148,66 @@ def unit_state(name):
         "active": active.splitlines()[0] if active else "unknown",
         "enabled": enabled.splitlines()[0] if enabled else "unknown",
     }
+
+
+# ---------------- 宿主机桥接(面板在 napcat 容器内时用) ----------------
+def _bridge_call(req, timeout=30):
+    """经 unix socket 调宿主机 scripts/panel_bridge.py。
+
+    返回桥接的 JSON 应答; 桥接本身不可用时返回 {"ok": False, "error": ...}。
+    """
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(BRIDGE_SOCK)
+        s.sendall((json.dumps(req, ensure_ascii=False) + "\n").encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+            if b"\n" in data:
+                break
+        s.close()
+        return json.loads(data.decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        return {"ok": False, "error": f"宿主机桥接不可用: {e}"}
+
+
+def _bridge_services():
+    r = _bridge_call({"action": "services"})
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or "桥接失败")
+    return r.get("services") or []
+
+
+def _bridge_svc(name, op, timeout=40):
+    r = _bridge_call({"action": "svc", "name": name, "op": op}, timeout)
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or r.get("output") or "操作失败")
+    return r
+
+
+def _bridge_journal(name, lines):
+    r = _bridge_call({"action": "journal", "name": name, "lines": lines}, 40)
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or "读取失败")
+    return r.get("text") or "(无日志)"
+
+
+def _bridge_ai_test(prompt):
+    r = _bridge_call({"action": "ai_test", "prompt": prompt}, 480)
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or "测试失败")
+    return r
+
+
+def _bridge_restart_ai():
+    r = _bridge_call({"action": "restart_ai"}, 90)
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or "重启失败")
+    return r
 
 
 def safe_script_path(name):
@@ -272,7 +340,8 @@ class Handler(BaseHTTPRequestHandler):
     def _get_api(self, path, qs):
         if path == "/api/overview":
             ai_cfg = load_ai_config()
-            services = [unit_state(n) for n in known_units()]
+            services = (_bridge_services() if IN_CONTAINER
+                        else [unit_state(n) for n in known_units()])
             return self._json({
                 "ok": True,
                 "services": services,
@@ -287,12 +356,20 @@ class Handler(BaseHTTPRequestHandler):
             name = (qs.get("name") or [""])[0]
             if name not in known_units():
                 raise ValueError("未知服务")
+            if IN_CONTAINER:
+                for s in _bridge_services():
+                    if s.get("name") == name:
+                        return self._json({"ok": True, **s})
+                raise ValueError("未知服务")
             return self._json({"ok": True, **unit_state(name)})
         if path == "/api/service/logs":
             name = (qs.get("name") or [""])[0]
             lines = int((qs.get("lines") or ["150"])[0])
             if name not in known_units():
                 raise ValueError("未知服务")
+            if IN_CONTAINER:
+                return self._json({"ok": True,
+                                   "text": _bridge_journal(name, min(lines, 2000))})
             rc, out = run(["journalctl", "--user", "-u", name, "-n", str(min(lines, 2000)),
                            "--no-pager", "-o", "cat"], 20)
             return self._json({"ok": rc in (0, 1), "text": out or "(无日志)"})
@@ -391,6 +468,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("未知服务")
             if action not in ("start", "stop", "restart"):
                 raise ValueError("未知操作")
+            if IN_CONTAINER:
+                r = _bridge_svc(name, action)
+                return self._json({"ok": True, "output": r.get("output", ""),
+                                   "active": r.get("active"),
+                                   "enabled": r.get("enabled")})
             rc, out = run(["systemctl", "--user", action, name], 40)
             return self._json({"ok": rc == 0, "output": out, **unit_state(name)})
         if path == "/api/script/save":
@@ -458,12 +540,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "backup": bak})
         if path == "/api/ai/test":
             prompt = str(body.get("prompt") or "").strip() or "你好，请用一句话介绍你自己。"
+            if IN_CONTAINER:
+                r = _bridge_ai_test(prompt)
+                return self._json({"ok": True, "success": bool(r.get("success")),
+                                   "provider": r.get("provider"),
+                                   "text": r.get("text") or "(空)"})
             cfg = load_ai_config()
             ok, provider, text = ai_client.test(cfg, prompt=prompt)
-            return self._json({"ok": ok, "provider": provider, "text": text,
-                               "api": ai_client.api_info(cfg)})
+            return self._json({"ok": True, "success": ok, "provider": provider,
+                               "text": text, "api": ai_client.api_info(cfg)})
         if path == "/api/ai/reload":
             # 重启 AI 相关服务, 让新配置生效(配置文件只在启动时读取)
+            if IN_CONTAINER:
+                r = _bridge_restart_ai()
+                return self._json({"ok": True, "output": r.get("output", "")})
             out = []
             for u in ("napcat-listener", "fnchat-ai"):
                 rc, o = run(["systemctl", "--user", "restart", u], 40)
@@ -848,7 +938,7 @@ async function testAI(){
   $('testMeta').textContent = '';
   try{
     const d = await api('/api/ai/test', {method:'POST', body: JSON.stringify({prompt})});
-    $('testMeta').innerHTML = d.ok
+    $('testMeta').innerHTML = d.success
       ? '本次回答来源：<b class="'+(d.provider==='api'?'ok':'warn')+'">'+(d.provider==='api'?'外部 API':'本地模型')+'</b>'
       : '<span class="bad">调用失败</span>';
     $('testOut').textContent = d.text || '(空)';
