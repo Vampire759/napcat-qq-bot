@@ -44,7 +44,7 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
   "model": "gemma-3n-e2b",
   "timeout": 180,
   "max_chars": 600,
-  "history_msgs": 8,
+  "history_msgs": 20,
   "temperature": 0.7,
   "num_predict": 512,
   "read_air_prob": 1.0,
@@ -71,7 +71,7 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
 | `model` | 请求里的模型名；llama.cpp 用 `--alias` 起的名字即可 |
 | `timeout` | 单次生成超时（秒），CPU 推理建议 ≥180 |
 | `max_chars` | 回复最大字符数，超出截断加 `…` |
-| `history_msgs` | 每个群/会话保留的上下文条数 |
+| `history_msgs` | 每个群/会话保留的上下文条数（默认 20，含**未被回复**的消息） |
 | `temperature` / `num_predict` | 采样温度 / 最大生成 token |
 | `read_air_prob` | **读空气概率，1.0 = 100%（必接）**；没被 @ 也主动接话的概率（取值 0~1） |
 | `read_air_min_interval` | 同一群两次主动接话最小间隔（秒，防刷屏） |
@@ -178,6 +178,37 @@ systemctl --user restart napcat-listener fnchat-ai
 - `rules_block_keywords`：用户消息含这些词时**直接不回复**（QQ 与微信都跳过），仅开关开启时生效；留空 `[]` 即只做提示词约束
 - 关闭：`rules_enabled: false` 后重启 `napcat-listener` 与 `fnchat-ai`
 - 日志关键字：`命中规则违禁词(词), 不回复`
+
+### 2.5 上下文记忆（为什么之前"记不住"）
+
+多轮对话的上下文由 `history_msgs` 控制（默认 20 条，即约 10 轮），并**落盘**：
+
+| 项目 | 位置 | 说明 |
+|------|------|------|
+| QQ 群上下文 | `conf/ai_history.json` | 按群号分组，重启不丢 |
+| 微信上下文 | `conf/fnchat_history.json` | 单会话，重启不丢 |
+| 条数上限 | `conf/ai_config.json` → `history_msgs` | 默认 20，超出自动丢弃最旧的 |
+
+之前"记不住"的三个原因，现已修复：
+
+1. **只记录被回复的消息**：被 90 秒间隔 / 字数太短 / 概率跳过 / 模型输出 `<SKIP>` 的消息以前**不进入上下文**。现在无论是否回复都会写入（`_ai_note`），所以后续回答能看到前面聊过的内容。
+2. **只存在内存**：以前重启服务（改配置、更新代码）上下文直接清零；现在每次写入都会存到 `conf/ai_history.json` / `conf/fnchat_history.json`，重启后自动恢复。
+3. **窗口太短**：原来 `history_msgs=8`（约 4 轮），现在默认 20（约 10 轮）。
+
+调整与维护：
+
+```json
+"history_msgs": 20
+```
+
+- 想让 AI 记得更久：调大到 30~40（CPU 推理会变慢，因为提示词更长）
+- 想清空记忆：停服务后删除 `conf/ai_history.json` / `conf/fnchat_history.json`，再启动
+- 改 `history_msgs` 需重启 `napcat-listener` 与 `fnchat-ai`；上下文文件本身实时写入
+- 注意：`read_air_prob=1.0` 时仍保留「同群 90 秒最多接一次」的防刷屏限制，但这**不会**再导致丢上下文
+
+```bash
+systemctl --user restart napcat-listener fnchat-ai
+```
 
 
 

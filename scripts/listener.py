@@ -134,7 +134,7 @@ AI_DEFAULTS = {
     "model": "gemma-3n-e2b",               # 切换模型只改这里
     "timeout": 180,                        # 单次生成超时(秒)
     "max_chars": 600,                      # 回复最大字符数
-    "history_msgs": 8,                     # 每个群保留的上下文消息条数
+    "history_msgs": 20,                    # 每个群保留的上下文消息条数(含未回复的消息)
     "temperature": 0.7,
     "num_predict": 512,
     "read_air_prob": 1.0,                  # 「读空气」: 没被@也主动接话的概率(0~1, 1=必接)
@@ -394,7 +394,52 @@ def send_group(group_id, text):
 
 # ---------------- 本地 AI 聊天(Ollama) ----------------
 _ai_queue = queue.Queue(maxsize=20)
-_ai_history = {}
+AI_HISTORY_FILE = os.path.join(CONF_DIR, "ai_history.json")
+_ai_hist_lock = threading.RLock()
+
+
+def _load_ai_history():
+    """从 conf/ai_history.json 恢复上下文(重启不丢记忆)。"""
+    try:
+        with open(AI_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return {}
+    out = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, list):
+                out[str(k)] = v[-AI_HISTORY_MSGS:]
+    return out
+
+
+def _save_ai_history():
+    try:
+        with _ai_hist_lock:
+            tmp = AI_HISTORY_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(_ai_history, f, ensure_ascii=False)
+            os.replace(tmp, AI_HISTORY_FILE)
+    except Exception:
+        pass
+
+
+def _ai_note(group_id, user_name, text, reply=None):
+    """把消息写入上下文(无论是否回复)并落盘; 超过 history_msgs 自动截断。"""
+    key = str(group_id)
+    with _ai_hist_lock:
+        h = _ai_history.setdefault(key, [])
+        h.append({"role": "user", "content": f"{user_name}：{text}"})
+        if reply is not None:
+            h.append({"role": "assistant", "content": reply})
+        del h[:-AI_HISTORY_MSGS]
+        if len(_ai_history) > 50:
+            for old in list(_ai_history)[:-50]:
+                _ai_history.pop(old, None)
+    _save_ai_history()
+
+
+_ai_history = _load_ai_history()
 _ai_last_air = {}            # 每群上次「读空气」接话时间戳
 _ai_worker_started = False
 
@@ -436,14 +481,19 @@ def _ai_maybe_read_air(group_id, user_id, user_name, text):
     if not AI_ENABLED:
         return
     if AI_READ_AIR_PROB <= 0:
+        _ai_note(group_id, user_name, text)
         return
     if len(text) < AI_READ_AIR_MIN_CHARS:
+        _ai_note(group_id, user_name, text)
         return
     if random.random() > AI_READ_AIR_PROB:
+        _ai_note(group_id, user_name, text)
         return
     key = str(group_id)
     now = time.time()
     if now - _ai_last_air.get(key, 0) < AI_READ_AIR_MIN_INTERVAL:
+        # 不接话但也要记入上下文, 否则后续回复会"失忆"
+        _ai_note(group_id, user_name, text)
         return
     _ai_last_air[key] = now
     _ai_enqueue(group_id, user_id, user_name, text, mode="air")
@@ -516,17 +566,17 @@ def _ai_handle(group_id, user_id, user_name, text, mode="at"):
         answer = _chat(messages)
     if not answer:
         log.info(f"[AI] 群{group_id} 返回空内容")
+        _ai_note(group_id, user_name, text)
         return
     if AIR_SKIP_TOKEN in answer or answer.upper().strip() == "SKIP":
         log.info(f"[AI] 群{group_id} 读空气后决定不接话")
+        _ai_note(group_id, user_name, text)
         return
     if len(answer) > AI_MAX_CHARS:
         answer = answer[:AI_MAX_CHARS].rstrip() + "…"
     send_group(group_id, answer)
     log.info(f"[AI] 回复({mode}) 群{group_id}: {answer[:60]}")
-    history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": answer})
-    _ai_history[key] = history[-AI_HISTORY_MSGS:]
+    _ai_note(group_id, user_name, text, answer)
 
 
 def fetch_yiyan():

@@ -39,6 +39,7 @@ ROOT_DIR = os.path.dirname(BASE_DIR)                     # 项目根
 CONF_DIR = os.path.join(ROOT_DIR, "conf")
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 STATE_FILE = os.path.join(CONF_DIR, "fnchat_state.json")
+HISTORY_FILE = os.path.join(CONF_DIR, "fnchat_history.json")
 LOG_FILE = os.path.join(LOG_DIR, "fnchat_ai.log")
 
 # ============ 共用 AI 配置(conf/ai_config.json) ============
@@ -198,6 +199,24 @@ def save_state(last_id):
     os.replace(tmp, STATE_FILE)
 
 
+def load_history():
+    """恢复微信会话上下文(重启不丢记忆)。"""
+    data = _load_json(HISTORY_FILE)
+    h = data.get("history") if isinstance(data, dict) else None
+    return h[-AI_HISTORY_MSGS:] if isinstance(h, list) else []
+
+
+def save_history(history):
+    try:
+        tmp = HISTORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"history": history[-AI_HISTORY_MSGS:]},
+                      f, ensure_ascii=False)
+        os.replace(tmp, HISTORY_FILE)
+    except Exception:
+        pass
+
+
 def ask_ai(history, text):
     """返回回答; 命中规则违禁词时返回 ""(调用方按空内容跳过)。"""
     hit = ai_rules.blocked(text, AI_CFG)
@@ -267,7 +286,7 @@ def main():
     fc = FnChat()
     fc.login()
 
-    history = []
+    history = load_history()
     last_id = load_state()
     target_user = None            # 官方会话发送目标(微信联系人 id)
     recent_replies = deque(maxlen=10)  # 防止把 AI 自己的回复当成用户消息
@@ -334,6 +353,7 @@ def main():
                 history.append({"role": "user", "content": text})
                 history.append({"role": "assistant", "content": answer})
                 history = history[-AI_HISTORY_MSGS:]
+                save_history(history)
                 last_id = mid
                 save_state(last_id)
         except Exception as e:
