@@ -1,6 +1,6 @@
 # AI 助手 / 微信接入 / 自动登录二维码 手册
 
-本文覆盖 4 个可选能力，全部由 `install.sh` 自动检测并部署，也可手动启用：
+本文覆盖 5 个可选能力，全部由 `install.sh` 自动检测并部署，也可手动启用：
 
 | 能力 | 脚本 | 服务 |
 |------|------|------|
@@ -8,6 +8,9 @@
 | QQ 群 AI 聊天 + 读空气 | `scripts/listener.py` | `napcat-listener.service` |
 | 微信（飞牛 fnchat）AI 聊天 | `scripts/fnchat_ai.py` | `fnchat-ai.service` |
 | 登录二维码自动发微信 | `scripts/qr_forward.py` | `qr-forward.service` |
+| 网页管理面板（服务/脚本/AI 配置/日志） | `scripts/web_panel.py` | `napcat-web-panel.service` |
+
+> AI 调用逻辑在 `scripts/ai_client.py`：**配置了外部 API 就先走外部 API，失败/超时/未配置自动回退本地 llama.cpp**，QQ 与微信共用。
 
 ---
 
@@ -42,6 +45,13 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
   "enabled": true,
   "api_url": "http://127.0.0.1:11435",
   "model": "gemma-3n-e2b",
+  "api_enabled": true,
+  "api_base_url": "",
+  "api_key": "",
+  "api_model": "",
+  "api_timeout": 60,
+  "api_fallback_local": true,
+  "api_proxy": "",
   "timeout": 180,
   "max_chars": 600,
   "history_msgs": 20,
@@ -69,6 +79,13 @@ QQ 群与微信共用同一份配置，**改完重启服务生效**（人格 md 
 | `enabled` | `false` 可一键关掉 AI（群聊 + 微信都停） |
 | `api_url` | OpenAI 兼容端点根地址，不带 `/v1`（脚本自己拼 `/v1/chat/completions`） |
 | `model` | 请求里的模型名；llama.cpp 用 `--alias` 起的名字即可 |
+| `api_enabled` | 外部 API 总开关（默认 `true`，但 `api_base_url` 为空时不会调用，仍是本地） |
+| `api_base_url` | 外部 API 根地址（OpenAI 兼容，带不带 `/v1` 都行），如 `https://api.deepseek.com` |
+| `api_key` | 外部 API 密钥，只存本地 `conf/`，不入库 |
+| `api_model` | 外部 API 的模型名，如 `deepseek-chat` / `qwen-plus` / `gpt-4o-mini` |
+| `api_timeout` | 外部 API 超时（秒，默认 60），超时即回退本地 |
+| `api_fallback_local` | 外部失败时是否回退本地（默认 `true`；`false` = 失败直接不回复） |
+| `api_proxy` | 可选 HTTP 代理（如 `http://127.0.0.1:7890`），访问境外 API 时用 |
 | `timeout` | 单次生成超时（秒），CPU 推理建议 ≥180 |
 | `max_chars` | 回复最大字符数，超出截断加 `…` |
 | `history_msgs` | 每个群/会话保留的上下文条数（默认 20，含**未被回复**的消息） |
@@ -260,6 +277,56 @@ LLAMA_BIN=$HOME/llamacpp/bin/llama-server
 ```
 
 改完重启：`systemctl --user restart llama-ai`；日志在 `logs/llama-ai.log`（会打印 `使用 GPU 推理 (ngl=999) [sg render]` 或 `使用 CPU 推理`）。
+
+### 2.7 外部 API 优先（API → 本地自动回退）
+
+`scripts/ai_client.py` 统一负责 QQ 群与微信的模型调用，顺序是：
+
+```
+配置了外部 API？ ── 是 ──► 调外部 API ── 成功 ──► 用它的回答
+      │                        │
+      否                      失败/超时/空内容
+      │                        ▼
+      └────────────────► 本地 llama.cpp（api_fallback_local=true 时）
+                              │
+                          也失败 ──► 记日志，本条不回复
+```
+
+**最省事的改法：打开网页管理面板 →「AI 配置」**（见第 10 节），填地址 / Key / 模型名，保存后点「重启 listener + fnchat-ai」。也可以直接改 `conf/ai_config.json`：
+
+```bash
+cd ~/NapCatQQ-dokcer
+python3 - <<'PY'
+import json
+p = "conf/ai_config.json"
+d = json.load(open(p, encoding="utf-8"))
+d.update({
+    "api_enabled": True,
+    "api_base_url": "https://api.deepseek.com",   # 换你家服务商的根地址
+    "api_key": "sk-你的密钥",
+    "api_model": "deepseek-chat",
+    "api_timeout": 60,
+    "api_fallback_local": True,
+})
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+systemctl --user restart napcat-listener fnchat-ai
+```
+
+验证（日志里会明确写用了哪边）：
+
+```bash
+tail -n 30 logs/listener.log | grep "\[AI\]"
+#   [AI] 外部 API 回答成功 (https://api.deepseek.com / deepseek-chat)
+#   外部不可用时: [AI] 外部 API 调用失败 (...)：… → [AI] 回退本地模型
+```
+
+要点：
+
+- 只填 `api_base_url` 不填 key 也会尝试（本机网关/Ollama 常常不需要 key）；
+- `api_base_url` 留空 = 完全不调外部，和以前一样只用本地；
+- 外部 API 失败不会让机器人沉默，除非把 `api_fallback_local` 设为 `false`；
+- 想同时确认「这次是谁回答的」，用面板的「AI 测试」，会直接标出 `外部 API` 或 `本地模型`。
 
 ## 3. 切换模型
 
@@ -462,3 +529,51 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8033/api/health   # 40
 | 二维码没发到微信 | fnchat 不可用，看 `qr_forward.log` 里保存路径，`images/` 自取 |
 | 回复很慢 | CPU 推理正常，可换更小模型（如 Q4 的 2B）或调小 `num_predict` |
 | 回复太长 | 调小 `max_chars` / `num_predict`，或在人格 md 里限制字数 |
+
+---
+
+## 10. 网页管理面板（`scripts/web_panel.py`）
+
+一个纯标准库的网页后台，浏览器打开 `http://服务器IP:8090` 即可，手机上也能用。
+
+### 10.1 启动与登录
+
+```bash
+systemctl --user enable --now napcat-web-panel     # 安装/开机自启(install.sh 已自动做)
+systemctl --user status napcat-web-panel --no-pager
+
+# 访问令牌(首次启动自动生成并写入 conf/web_panel.json)
+grep '"token"' conf/web_panel.json
+journalctl --user -u napcat-web-panel -n 20 | grep 令牌
+```
+
+- 浏览器首次访问输入令牌即可；也可用一次性链接 `http://服务器IP:8090/?token=令牌` 直接进入。
+- 令牌保存在 Cookie（30 天），换浏览器/清 Cookie 需要重新输入。
+- 忘记/想换令牌：`python3 scripts/web_panel.py --reset-token` 后重启服务。
+
+配置 `conf/web_panel.json`（不入库，`install.sh` 自动生成）：
+
+```json
+{ "host": "0.0.0.0", "port": 8090, "token": "" }
+```
+
+- `host` 改成 `127.0.0.1` 即只允许本机访问（要经 nginx 反代时用）；
+- `port` 冲突就换一个（如 8091），改完重启 `napcat-web-panel`；
+- `token` 留空则每次启动若仍为空会自动生成；手动填一段随机长字符串也可以。
+
+### 10.2 能做什么
+
+| 页签 | 功能 |
+|------|------|
+| 服务 | 列出全部 systemd 用户服务的 `active/enabled`，一键启动 / 停止 / 重启，看 journalctl 日志；「重启 listener + fnchat-ai」一键让 AI 配置生效 |
+| AI 配置 | 快捷设置外部 API（开关 / 地址 / Key / 模型 / 超时 / 回退 / 代理）；在线编辑完整 `ai_config.json`；在线编辑人格 `personality.md` 与规则 `ai_rules.md`（热加载）；「AI 测试」直接标出本次回答来自外部 API 还是本地模型 |
+| 脚本 | 列出 `scripts/` 下全部 `.py` / `.sh`，在线查看 / 编辑 / 保存（保存前自动备份到 `back/panel/`）/ 新建 / 删除 |
+| 日志 | 浏览 `logs/*.log` 并查看末尾 N 行 |
+
+> 保存脚本后仍需重启对应服务才会生效（服务页一键重启）。AI 配置只有 `personality.md` / `ai_rules.md` 是热加载，其余键要重启服务。
+
+### 10.3 安全提示
+
+- 面板默认监听 `0.0.0.0:8090`，靠令牌登录；**强烈建议**把令牌设长一点，或只在内网使用。
+- 不要把 `conf/web_panel.json` 提交到 Git（`.gitignore` 里 `conf/*` 已排除）。
+- 面板能改脚本 = 能执行任意代码，令牌等同于服务器权限，不要外传。

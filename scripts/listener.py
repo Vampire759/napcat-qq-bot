@@ -52,6 +52,7 @@ import threading
 import web_tool  # 同目录: 给 AI 用的联网搜索/网页抓取(conf/ai_config.json 里可关)
 import ai_agent  # 同目录: Agent 多步工具调用(默认关)
 import ai_rules  # 同目录: 规则限制(默认关)
+import ai_client  # 同目录: 外部 API 优先, 失败自动回退本地模型
 
 # ============ 内存限制 ============
 MEM_LIMIT_MB = 96
@@ -541,23 +542,9 @@ def _ai_handle(group_id, user_id, user_name, text, mode="at"):
     messages.append({"role": "user", "content": user_content})
 
     def _chat(msgs):
-        payload = {
-            "model": AI_MODEL,
-            "messages": msgs,
-            "stream": False,
-            "temperature": AI_TEMPERATURE,
-            "max_tokens": AI_NUM_PREDICT,
-        }
-        req = urllib.request.Request(
-            AI_API_URL.rstrip("/") + "/v1/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=AI_TIMEOUT) as r:
-            data = json.loads(r.read().decode())
-        choices = data.get("choices") or [{}]
-        return (choices[0].get("message") or {}).get("content", "").strip()
+        # 外部 API 优先; 未配置/超时/报错时自动回退本地 llama.cpp
+        return ai_client.chat(msgs, AI_CFG,
+                              log=lambda m: log.info(f"[AI] 群{group_id} {m}"))
 
     if agent_on:
         answer = ai_agent.run(_chat, messages, AI_CFG,

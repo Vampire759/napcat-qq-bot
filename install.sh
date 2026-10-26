@@ -282,10 +282,10 @@ fi
 # 第 6 步: 启动服务
 # ============================================================
 echo ""
-read -r -p "立即启动 4 个基础服务(监听/打卡/火花状态/每日一图)? [Y/n]: " DO_START
+read -r -p "立即启动 5 个基础服务(监听/打卡/火花状态/每日一图/网页管理面板)? [Y/n]: " DO_START
 if [ "${DO_START:-y}" != "n" ]; then
     systemctl --user enable --now napcat-listener.service napcat-sign.service \
-              napcat-spark-status.service napcat-daily-image.service
+              napcat-spark-status.service napcat-daily-image.service napcat-web-panel.service
     [ -n "$ENABLE_AI" ] && systemctl --user enable --now $ENABLE_AI \
         || true
     [ -n "$ENABLE_FNCHAT" ] && systemctl --user enable --now $ENABLE_FNCHAT \
@@ -316,4 +316,8 @@ info "    手机抖音扫 images/douyin_qrcode.png 并完成刷脸, 然后:"
 info "    systemctl --user enable --now napcat-douyin-spark.service"
 info " 2. 群里 @机器人 添加续火花 抖音号 / 添加打卡群 群号"
 info " 3. 日常维护命令见 README.md"
+info " 4. 网页管理面板: http://<服务器IP>:8090   (访问令牌:"
+info "    grep '\"token\"' conf/web_panel.json 或 journalctl --user -u napcat-web-panel -n 20)"
+info " 5. AI 外部 API(优先调用): 面板 → AI 配置, 填 base_url / key / model,"
+info "    保存后点「重启 listener + fnchat-ai」; 不填则一直用本地模型"
 info "=============================================="

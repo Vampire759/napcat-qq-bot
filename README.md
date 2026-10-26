@@ -88,6 +88,28 @@ bash install.sh
 > 需要 `docker`（跑 NapCat 本体）和 `python3 + pip3`。抖音功能需要网络能访问 douyin.com。
 >
 > AI 人格改 `conf/personality.md`、模型改 `conf/ai_config.json`，细节见 **[docs/AI手册.md](docs/AI手册.md)**。
+>
+> AI 支持**外部 API 优先、失败自动回退本地模型**：在 `conf/ai_config.json` 填 `api_base_url` / `api_key` / `api_model` 即可（留空则一直用本地），或在网页管理面板里填。
+
+## 网页管理面板
+
+装好后浏览器打开 **`http://服务器IP:8090`**，输入访问令牌登录（令牌见 `conf/web_panel.json`，或 `journalctl --user -u napcat-web-panel -n 20`）：
+
+| 页签 | 能做什么 |
+|------|----------|
+| 服务 | 全部 systemd 用户服务状态，一键启动/停止/重启，看 journalctl 日志 |
+| AI 配置 | 外部 API 开关/地址/Key/模型、完整 `ai_config.json`、人格与规则在线编辑、AI 连通性测试（会显示本次用的是外部 API 还是本地模型） |
+| 脚本 | `scripts/` 下脚本在线查看/编辑/保存（自动备份到 `back/panel/`）、新建、删除 |
+| 日志 | 浏览 `logs/*.log` |
+
+```bash
+systemctl --user restart napcat-web-panel     # 改完面板配置重启
+grep '"token"' conf/web_panel.json            # 查看/设置访问令牌
+python3 scripts/web_panel.py --reset-token    # 换一个令牌
+```
+
+> 面板能改脚本 = 能执行任意代码，令牌请当密码保管；只在内网用的话可把 `conf/web_panel.json` 的 `host` 改成 `127.0.0.1`。
+
 
 ## 手动搭建（不跑 install.sh 时）
 
@@ -152,8 +174,9 @@ systemctl --user enable --now napcat-douyin-spark.service
 ## 日常维护
 
 ```bash
-systemctl --user list-units 'napcat-*' --no-pager    # 巡检: 5 个应全 active
+systemctl --user list-units 'napcat-*' --no-pager    # 巡检: 5 个应全 active(含 napcat-web-panel)
 systemctl --user restart napcat-listener             # 改完代码必须重启
+systemctl --user restart napcat-web-panel            # 面板本身改完后重启
 tail -f logs/listener.log                            # 实时日志
 journalctl --user -u napcat-douyin-spark -n 50       # 服务级日志(排障)
 python3 scripts/douyin_spark.py --check              # 检查抖音登录态
