@@ -214,6 +214,53 @@ systemctl --user restart napcat-listener fnchat-ai
 
 ---
 
+### 2.6 显卡推理（GPU / Vulkan，自动识别）
+
+`scripts/start_ai.sh` 启动时自动判断：`llama-server --list-devices` 能列出真实 GPU（CUDA / Vulkan / ROCm / Metal）就 `-ngl 999` 全量 offload，否则自动退回 CPU，无需改配置。
+
+**当前本机实测（AMD RX 560 4GB + Vulkan 构建）**
+
+| 项目 | GPU（Vulkan） | CPU（8 线程） |
+|------|---------------|----------------|
+| 524 tokens 提示词处理 | 142 t/s | 171 t/s |
+| 生成速度 | 23~26 t/s | 17~18 t/s |
+| 显存占用 | 模型缓冲 1440MB + KV 64MB（31/31 层在 GPU） | — |
+
+短提示词时 GPU 首字延迟略高（首次请求有初始化开销），长对话总体更快；显存不足时 llama.cpp 会按可用显存自动缩减 offload 层数。
+
+**AMD 显卡启用步骤（Debian/Ubuntu/飞牛OS）**
+
+```bash
+# 1) Vulkan 运行库 + 编译依赖
+sudo apt install -y libvulkan1 vulkan-tools libvulkan-dev mesa-vulkan-drivers \
+                    glslc spirv-headers glslang-tools
+
+# 2) 让当前用户能访问显卡设备（renderD*），否则 Vulkan 只看到软件设备 llvmpipe
+sudo usermod -aG render,video "$USER"     # 需重新登录生效
+sg render -c 'vulkaninfo --summary'       # 能看到 AMD Radeon ... (RADV) 即成功
+
+# 3) 编译 Vulkan 版 llama.cpp（独立目录，保留 CPU 版做回退）
+curl -L -o /tmp/llama.tar.gz https://codeload.github.com/ggml-org/llama.cpp/tar.gz/refs/heads/master
+mkdir -p ~/llamacpp-src && tar -xzf /tmp/llama.tar.gz -C ~/llamacpp-src
+cmake -S ~/llamacpp-src/llama.cpp-master -B ~/llamacpp-src/build-vulkan \
+      -DGGML_VULKAN=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build ~/llamacpp-src/build-vulkan -j "$(nproc)" --target llama-server
+```
+
+> 若系统 Vulkan 头较旧，编译报 `'LayerSettingEXT' is not a member of 'vk'`：
+> 在 `ggml/src/ggml-vulkan/ggml-vulkan.cpp` 里把 `LayerSettingEXT` 那段用
+> `#ifdef VK_EXT_layer_settings ... #else ... #endif` 包起来即可（本机已这样处理）。
+
+`start_ai.sh` 会自动优先使用 `~/llamacpp-src/build-vulkan/bin/llama-server`，并通过 `sg render` 启动以取得显卡权限；检测不到 GPU 时仍用 CPU。
+
+**强制切回 CPU**（在 `conf/ai_local.sh` 里指定旧二进制即可）：
+
+```bash
+LLAMA_BIN=$HOME/llamacpp/bin/llama-server
+```
+
+改完重启：`systemctl --user restart llama-ai`；日志在 `logs/llama-ai.log`（会打印 `使用 GPU 推理 (ngl=999) [sg render]` 或 `使用 CPU 推理`）。
+
 ## 3. 切换模型
 
 脚本只认 **OpenAI 兼容的 `/v1/chat/completions`**，所以换模型只改 `conf/ai_config.json`，不动代码。

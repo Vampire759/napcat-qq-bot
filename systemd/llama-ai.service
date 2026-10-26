@@ -5,8 +5,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/napcat-qq-bot
-Environment=LD_LIBRARY_PATH=%h/llamacpp/bin
 ExecStart=/bin/bash /opt/napcat-qq-bot/scripts/start_ai.sh
+StandardOutput=append:/opt/napcat-qq-bot/logs/llama-ai.log
+StandardError=append:/opt/napcat-qq-bot/logs/llama-ai.log
 Restart=always
 RestartSec=5
 MemoryMax=12G

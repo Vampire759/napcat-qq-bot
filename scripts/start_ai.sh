@@ -23,11 +23,16 @@ if [ -f "$ROOT/conf/ai_local.sh" ]; then
     . "$ROOT/conf/ai_local.sh"
 fi
 
-BIN="${LLAMA_BIN:-$HOME/llamacpp/bin/llama-server}"
+BIN_DEFAULT="$HOME/llamacpp/bin/llama-server"
+if [ -x "$HOME/llamacpp-src/build-vulkan/bin/llama-server" ]; then
+    BIN_DEFAULT="$HOME/llamacpp-src/build-vulkan/bin/llama-server"   # Vulkan 构建优先
+fi
+BIN="${LLAMA_BIN:-$BIN_DEFAULT}"
 MODEL="${LLAMA_MODEL:-$HOME/models/gemma-3n-E2B-it-Q4_K_M.gguf}"
 PORT="${LLAMA_PORT:-11435}"
 CTX="${LLAMA_CTX:-4096}"
 THREADS="${LLAMA_THREADS:-$(nproc 2>/dev/null || echo 4)}"
+export LD_LIBRARY_PATH="$(dirname "$BIN"):${LD_LIBRARY_PATH:-}"
 
 if [ ! -x "$BIN" ]; then
     echo "[start_ai] 找不到 llama-server: $BIN"
@@ -41,22 +46,36 @@ fi
 
 # ---- 自动识别显卡 ----
 NGPU=0
-DEV="$("$BIN" --list-devices 2>/dev/null | tail -n +2 | grep -viE '^\s*$|\(none\)' || true)"
+USE_SG=0
+# AMD 显卡要能访问 /dev/dri/renderD* (通常属于 render 组); 用 sg 提权执行
+if command -v sg >/dev/null 2>&1 && sg render -c true 2>/dev/null; then
+    USE_SG=1
+    DEV="$({ sg render -c "\"$BIN\" --list-devices"; } 2>/dev/null | tail -n +2 \
+          | grep -viE '^\s*$|\(none\)|llvmpipe' || true)"
+else
+    DEV="$("$BIN" --list-devices 2>/dev/null | tail -n +2 \
+          | grep -viE '^\s*$|\(none\)|llvmpipe' || true)"
+fi
 if [ -n "${DEV:-}" ]; then
-    NGPU=999   # 全部层 offload; 内存不足时 llama.cpp 会自动回退
+    NGPU=999   # 全部层 offload; 显存不足时 llama.cpp 会自动回退
 fi
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qi gpu; then
     NGPU=999
 fi
 
 if [ "$NGPU" -gt 0 ]; then
-    echo "[start_ai] 检测到显卡, 使用 GPU 推理 (ngl=$NGPU)"
+    echo "[start_ai] 检测到显卡, 使用 GPU 推理 (ngl=$NGPU)$( [ "$USE_SG" = 1 ] && echo ' [sg render]')"
 else
     echo "[start_ai] 未检测到可用显卡, 使用 CPU 推理 (ngl=0, threads=$THREADS)"
 fi
 
-exec "$BIN" -m "$MODEL" \
-    --host 127.0.0.1 --port "$PORT" \
-    -c "$CTX" -t "$THREADS" -np 1 \
-    -ngl "$NGPU" --jinja \
-    --alias "${LLAMA_ALIAS:-gemma-3n-e2b}"
+ARGS=(-m "$MODEL" --host 127.0.0.1 --port "$PORT"
+      -c "$CTX" -t "$THREADS" -np 1 -ngl "$NGPU" --jinja
+      --alias "${LLAMA_ALIAS:-gemma-3n-e2b}")
+
+if [ "$USE_SG" = 1 ] && [ "$NGPU" -gt 0 ]; then
+    printf -v CMD '%q ' "$BIN" "${ARGS[@]}"
+    echo "[start_ai] exec: sg render -c '$CMD'"
+    exec sg render -c "exec $CMD"
+fi
+exec "$BIN" "${ARGS[@]}"

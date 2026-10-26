@@ -164,11 +164,28 @@ GPU_INFO="未检测到独显(将使用 CPU 推理)"
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qi gpu; then
     GPU_INFO="$(nvidia-smi -L 2>/dev/null | head -n 1) (CUDA)"
 elif ls /dev/dri/renderD* >/dev/null 2>&1; then
-    GPU_INFO="检测到 /dev/dri 渲染设备(AMD/Intel; 需 llama-server 带 Vulkan/ROCm 支持)"
+    if command -v vulkaninfo >/dev/null 2>&1 && \
+       vulkaninfo --summary 2>/dev/null | grep -qiE "deviceName.*(AMD|Radeon|Intel|NVIDIA)"; then
+        GPU_INFO="$(vulkaninfo --summary 2>/dev/null | grep -iE 'deviceName.*(AMD|Radeon|Intel|NVIDIA)' | head -n 1 | sed 's/.*= *//') (Vulkan)"
+    else
+        GPU_INFO="检测到 /dev/dri 渲染设备(AMD/Intel; 需 llama-server 带 Vulkan/ROCm 支持)"
+    fi
+    # AMD/Intel 走 Vulkan 时需要能读写 /dev/dri/renderD*, 通常属于 render 组
+    if ! id -nG "$USER" 2>/dev/null | grep -qw render; then
+        read -r -p "把当前用户加入 render 组以启用显卡推理(需重新登录生效)? [Y/n]: " DO_RENDER
+        if [ "${DO_RENDER:-y}" != "n" ]; then
+            sudo usermod -aG render "$USER" \
+                && warn "已加入 render 组; 当前会话需重新登录(或重启)后才会真正生效" \
+                || warn "加入 render 组失败, 可手动执行: sudo usermod -aG render \$USER"
+        fi
+    fi
 fi
 info "显卡检测: $GPU_INFO"
 
 LLAMA_BIN_DEFAULT="$HOME/llamacpp/bin/llama-server"
+if [ -x "$HOME/llamacpp-src/build-vulkan/bin/llama-server" ]; then
+    LLAMA_BIN_DEFAULT="$HOME/llamacpp-src/build-vulkan/bin/llama-server"   # Vulkan 构建优先
+fi
 MODEL_DEFAULT="$HOME/models/gemma-3n-E2B-it-Q4_K_M.gguf"
 if [ -x "$LLAMA_BIN_DEFAULT" ] && [ -f "$MODEL_DEFAULT" ]; then
     info "检测到本地模型服务: $LLAMA_BIN_DEFAULT + $MODEL_DEFAULT"
