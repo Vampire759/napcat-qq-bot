@@ -1,5 +1,7 @@
 # AI 助手 / 微信接入 / 自动登录二维码 手册
 
+> 项目仓库: https://github.com/Vampire759/napcat-qq-bot
+
 本文覆盖 5 个可选能力，全部由 `install.sh` 自动检测并部署，也可手动启用：
 
 | 能力 | 脚本 | 服务 |

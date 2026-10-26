@@ -78,7 +78,7 @@ sudo python3 -m playwright install-deps chromium # 缺系统库(libnss3等)时�
 ## 一键搭建
 
 ```bash
-git clone https://github.com/YOUR_NAME/napcat-qq-bot.git
+git clone https://github.com/Vampire759/napcat-qq-bot.git
 cd napcat-qq-bot
 bash install.sh
 ```
